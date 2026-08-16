@@ -16,7 +16,9 @@
 - Certificates for 3_1, 4_1, 5_1, 7_1, 8_19, 9_1, 10_124 with costs
   1, 1, 2, 3, 3, 4, 4 -- every one matching the published value, and the three
   torus knots matching Kronheimer-Mrowka's (p-1)(q-1)/2.
-- 24 tests, no dependencies.
+- `[lib]` + `[[bin]]` split, so the crate can be depended on. 30 tests: 25 unit,
+  4 integration exercising the public API as an external caller, 1 doctest.
+- No dependencies.
 
 ## v0.2 — R3 — done
 
@@ -160,8 +162,6 @@ below):
   the blobs, or store `(seed, tool version, input hash)` and regenerate.
 - The semantic-move layer used in rf-knots, as an *optional authoring* format
   with a lossless compiler down to `R`/`M`. Verification must never depend on it.
-- Expose a `[lib]` target. The crate is bin-only today, so nothing can depend on
-  it; that blocks every form of reuse.
 - Keep a second, independent implementation of the action semantics and check
   the two against each other in CI. The 98/98 agreement above is only evidence
   because rf-knots and unknotdb share no code. Collapsing to one implementation

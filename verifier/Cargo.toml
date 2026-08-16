@@ -10,6 +10,10 @@ license = "MIT OR Apache-2.0"
 # or a YAML library.
 [dependencies]
 
+[lib]
+name = "unknotdb"
+path = "src/lib.rs"
+
 [[bin]]
 name = "unknotdb"
 path = "src/main.rs"
