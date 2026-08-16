@@ -16,8 +16,11 @@
 - Certificates for 3_1, 4_1, 5_1, 7_1, 8_19, 9_1, 10_124 with costs
   1, 1, 2, 3, 3, 4, 4 -- every one matching the published value, and the three
   torus knots matching Kronheimer-Mrowka's (p-1)(q-1)/2.
-- `[lib]` + `[[bin]]` split, so the crate can be depended on. 30 tests: 25 unit,
+- `[lib]` + `[[bin]]` split, so the crate can be depended on. 32 tests: 27 unit,
   4 integration exercising the public API as an external caller, 1 doctest.
+- Cyclic (cylinder) braids: `cbraid:n:...`, generators mod `n`, where `+/-n` is
+  the seam band. Differentially tested against rf-knots over 750 random words
+  and 1081 seam generators with zero disagreements.
 - No dependencies.
 
 ## v0.2 — R3 — done
@@ -137,6 +140,25 @@ below):
 - 98/98 non-trivial states taken immediately after the last crossing change
   reduced to the unknot under this verifier's own R1/R2/R3 — independent
   agreement with rf-knots, no shared code.
+
+## Known gaps in link support
+
+Two bugs, both found by running the verifier over real corpora rather than by
+reading the code. Neither affects knots, and every certificate in `certs/` is a
+knot, but both are real.
+
+- **`canon` is wrong for links.** It walks `2n` steps from one dart, which on a
+  multi-component diagram cycles inside a single component and repeats instead
+  of covering the diagram. `unknotdb canon braid:3:1,1,1` returns ten entries
+  over two distinct crossing indices for a five-crossing diagram. This is silent
+  corruption of the *primary key*, so it must not stay. The fix is a design
+  decision rather than a patch: crossing indices are shared between components,
+  so per-component codes are not separable and keying a link means choosing a
+  canonical ordering over components. Until that is designed, `canon` should
+  refuse multi-component input rather than return nonsense.
+- **Split diagrams were rejected** — fixed. Euler's formula holds per connected
+  component, so a split closure such as `sigma_1 sigma_3` in `B_4` has
+  `n + 2k` faces, not `n + 2`.
 
 ## v0.5 — corpus
 

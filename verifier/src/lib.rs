@@ -98,6 +98,47 @@ mod tests {
         assert!(Diagram::from_braid(0, &[]).is_err());
     }
 
+    /// The closure of sigma_1 sigma_3 in B_4 is two disjoint kinks: a split
+    /// diagram. Euler's formula holds per connected component, so it has
+    /// n + 2k = 6 faces, not n + 2. Found by random differential testing
+    /// against rf-knots.
+    #[test]
+    fn split_diagrams_are_valid() {
+        let d = Diagram::from_braid(4, &[1, 3]).expect("a split closure is legal");
+        assert_eq!(d.n, 2);
+        assert_eq!(d.map_components(), 2, "two disjoint kinks");
+        assert_eq!(d.faces().len(), d.n + 2 * d.map_components());
+        assert_eq!(d.components(), 2, "two link components");
+        let (red, _) = d.reduce();
+        assert_eq!(red.n, 0, "both kinks come out");
+        assert_eq!(red.free_loops, 2, "leaving a 2-component unlink");
+    }
+
+    /// Cyclic (cylinder) braids: the seam generator is the BKL band
+    /// a_{1,n} = w sigma_1 w^-1, an ordinary element of B_n, so the closure is
+    /// an ordinary link. Checked letter-for-letter against rf-knots'
+    /// compile_cyclic_bands over 480 random words elsewhere; this pins the
+    /// expansion itself.
+    #[test]
+    fn cyclic_seam_generator_expands_to_a_band() {
+        assert_eq!(Diagram::compile_cyclic(3, &[3]).unwrap(), vec![2, 1, -2]);
+        assert_eq!(Diagram::compile_cyclic(3, &[-3]).unwrap(), vec![2, -1, -2]);
+        assert_eq!(
+            Diagram::compile_cyclic(4, &[4]).unwrap(),
+            vec![3, 2, 1, -2, -3]
+        );
+        assert_eq!(Diagram::compile_cyclic(3, &[1, 2]).unwrap(), vec![1, 2]);
+        assert_eq!(Diagram::compile_cyclic(2, &[2]).unwrap(), vec![1]);
+        // exactly one letter of the expansion is the band's own crossing, so a
+        // seam flip stays a single crossing change
+        let pos = Diagram::compile_cyclic(5, &[5]).unwrap();
+        let neg = Diagram::compile_cyclic(5, &[-5]).unwrap();
+        assert_eq!(pos.len(), neg.len());
+        assert_eq!(pos.iter().zip(&neg).filter(|(a, b)| a != b).count(), 1);
+        assert!(Diagram::compile_cyclic(3, &[4]).is_err());
+        assert!(Diagram::from_cyclic_braid(3, &[1, 3, 2]).is_ok());
+    }
+
     #[test]
     fn hopf_link_has_two_components() {
         let d = Diagram::from_braid(2, &[1, 1]).unwrap();

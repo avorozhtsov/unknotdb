@@ -22,10 +22,16 @@ usage:
 
 input is either a PD code           PD[X[1,4,2,5], X[3,6,4,1], X[5,2,6,3]]
 or a braid closure                  braid:2:1,1,1
+or a cyclic (cylinder) braid        cbraid:3:1,3,2
+                                    generators are mod n; +/-n is the seam band
 ";
 
 fn parse_input(s: &str) -> Result<Diagram, String> {
-    if let Some(rest) = s.strip_prefix("braid:") {
+    let cyclic = s.starts_with("cbraid:");
+    if let Some(rest) = s
+        .strip_prefix("braid:")
+        .or_else(|| s.strip_prefix("cbraid:"))
+    {
         let mut it = rest.splitn(2, ':');
         let strands: usize = it
             .next()
@@ -40,10 +46,12 @@ fn parse_input(s: &str) -> Result<Diagram, String> {
             .filter(|t| !t.trim().is_empty())
             .map(|t| t.trim().parse::<i32>())
             .collect();
-        Diagram::from_braid(
-            strands,
-            &word.map_err(|_| "braid: bad generator".to_string())?,
-        )
+        let w = word.map_err(|_| "braid: bad generator".to_string())?;
+        if cyclic {
+            Diagram::from_cyclic_braid(strands, &w)
+        } else {
+            Diagram::from_braid(strands, &w)
+        }
     } else {
         Diagram::from_pd(s)
     }
