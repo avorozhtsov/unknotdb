@@ -1,0 +1,74 @@
+name: verify
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "17 4 * * *" # nightly full re-verification
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: build
+        run: cargo build --release --manifest-path verifier/Cargo.toml
+      - name: unit tests
+        run: cargo test --manifest-path verifier/Cargo.toml
+      - name: fmt
+        run: cargo fmt --manifest-path verifier/Cargo.toml --check
+      # Rust ignores SIGPIPE by default, which turns `unknotdb ... | head` into
+      # a panic. Enough output to overrun the pipe buffer, so the signal really
+      # fires; the binary must die quietly, writing nothing to stderr.
+      - name: dies quietly on SIGPIPE
+        run: |
+          set -uo pipefail
+          bin=./verifier/target/release/unknotdb
+          cert=$(find certs -name '*.cert' | head -1)
+          args=""
+          for _ in $(seq 6000); do args="$args $cert"; done
+          err=$( { $bin verify $args 2>&1 >/dev/null | head -20; } || true )
+          if [ -n "$err" ]; then
+            echo "wrote to stderr under SIGPIPE:"; echo "$err"; exit 1
+          fi
+          echo "SIGPIPE handled quietly"
+
+  certificates:
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: build
+        run: cargo build --release --manifest-path verifier/Cargo.toml
+      # On a pull request, verify only what the PR touches. The nightly run
+      # re-verifies everything; per-PR full verification does not scale past
+      # roughly 14 crossings.
+      - name: verify changed certificates
+        if: github.event_name == 'pull_request'
+        run: |
+          set -euo pipefail
+          changed=$(git diff --name-only --diff-filter=d \
+            "origin/${{ github.base_ref }}...HEAD" -- 'certs/**/*.cert')
+          if [ -z "$changed" ]; then echo "no certificates changed"; exit 0; fi
+          echo "$changed"
+          xargs -r ./verifier/target/release/unknotdb verify <<< "$changed"
+      - name: verify all certificates
+        if: github.event_name != 'pull_request'
+        run: |
+          set -euo pipefail
+          find certs -name '*.cert' -print0 \
+            | xargs -0 -r ./verifier/target/release/unknotdb verify
+      # A certificate's filename is derived from its content. A mismatch means
+      # the record was edited in place instead of superseded.
+      - name: check content-addressed filenames
+        run: |
+          set -euo pipefail
+          fail=0
+          while IFS= read -r f; do
+            want=$(./verifier/target/release/unknotdb id "$f")
+            [ "$f" = "$want" ] || { echo "misfiled: $f should be $want"; fail=1; }
+          done < <(find certs -name '*.cert')
+          exit $fail

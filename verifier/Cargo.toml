@@ -1,0 +1,18 @@
+[package]
+name = "unknotdb"
+version = "0.1.0"
+edition = "2021"
+description = "Machine-checked certificates for knot theory"
+license = "MIT OR Apache-2.0"
+
+# No dependencies. This is a design constraint, not an accident: the verifier
+# must be readable end to end and must not inherit trust from Regina, SnapPy,
+# or a YAML library.
+[dependencies]
+
+[[bin]]
+name = "unknotdb"
+path = "src/main.rs"
+
+[profile.release]
+opt-level = 3

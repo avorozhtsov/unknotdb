@@ -1,0 +1,17 @@
+---
+claim: unknotting_number_le
+value: 1
+subject:
+  canon: "O1+U2+O3+U1+O2+U3+"
+  pd: "PD[X[6,4,1,3], X[4,2,5,1], X[2,6,3,5]]"
+  knotinfo: "3_1"
+alphabet: X
+chirality: unknotdb
+assumes: []
+claim_source: "Rolfsen 1976"
+witness_author: "unknotdb/0.1.0 search"
+witness_date: 2026-08-15
+---
+XC c=0
+R2- c1=0 c2=1
+R1- c=0

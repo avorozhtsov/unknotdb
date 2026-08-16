@@ -1,0 +1,26 @@
+---
+claim: unknotting_number_le
+value: 4
+subject:
+  canon: "O1+O2+U3+U4+O5+O6+U7+U1+O8+O3+U9+U5+O10+O7+U2+U8+O4+O9+U6+U10+"
+  pd: "PD[X[20,8,1,7], X[1,15,2,14], X[8,16,9,15], X[9,3,10,2], X[16,4,17,3], X[17,11,18,10], X[4,12,5,11], X[5,19,6,18], X[12,20,13,19], X[13,7,14,6]]"
+  knotinfo: "10_124"
+alphabet: X
+chirality: unknotdb
+assumes: []
+claim_source: "Kronheimer-Mrowka 1993 (Milnor conjecture: u(T(p,q)) = (p-1)(q-1)/2)"
+witness_author: "unknotdb/0.1.0 search"
+witness_date: 2026-08-15
+---
+XC c=0
+R3 c1=0 c2=1 c3=2
+R2- c1=0 c2=3
+XC c=0
+R2- c1=0 c2=2
+R3 c1=2 c2=3 c3=4
+R1- c=3
+XC c=0
+R2- c1=0 c2=1
+XC c=0
+R2- c1=0 c2=2
+R1- c=0

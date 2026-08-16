@@ -1,0 +1,21 @@
+---
+claim: unknotting_number_le
+value: 3
+subject:
+  canon: "O1+U2+O3+U4+O5+U6+O7+U1+O2+U3+O4+U5+O6+U7+"
+  pd: "PD[X[14,8,1,7], X[8,2,9,1], X[2,10,3,9], X[10,4,11,3], X[4,12,5,11], X[12,6,13,5], X[6,14,7,13]]"
+  knotinfo: "7_1"
+alphabet: X
+chirality: unknotdb
+assumes: []
+claim_source: "Kronheimer-Mrowka 1993 (torus knots)"
+witness_author: "unknotdb/0.1.0 search"
+witness_date: 2026-08-15
+---
+XC c=0
+R2- c1=0 c2=1
+XC c=0
+R2- c1=0 c2=1
+XC c=0
+R2- c1=0 c2=1
+R1- c=0

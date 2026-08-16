@@ -1,0 +1,45 @@
+# Controlled vocabulary for the `assumes` field.
+#
+# A certificate may depend on an unproven statement. It names the dependency
+# here rather than burying it in prose, so that a claim is never served as
+# unconditional when it is not, and so that every claim resting on a statement
+# can be retracted in one query if the statement falls.
+#
+# status:
+#   open     - unproven, not known to be false
+#   refuted  - known false; every claim assuming it is in question
+#   proved   - settled; claims assuming it are unconditional and the
+#              assumption should be removed from them
+#
+# Entries are never deleted. A refuted assumption keeps its id so the records
+# depending on it stay traceable.
+
+additivity-of-u:
+  statement: >
+    The unknotting number is additive under connected sum:
+    u(K1 # K2) = u(K1) + u(K2).
+  status: refuted
+  asserted_by: "long-standing folklore conjecture"
+  refuted_by: "arXiv:2506.24088, Brittenham-Hermiller, Unknotting number is not additive under connected sum"
+  notes: >
+    This is the reason the `assumes` field exists, and it is not a hypothetical.
+    arXiv:2409.09032 determined the unknotting number of 43 knots with at most
+    12 crossings *assuming* additivity; those values are conditional on a
+    statement now known to be false in general, and must not be ingested as
+    settled. A conditional value may still be correct -- the refutation is a
+    counterexample, not a blanket reversal -- but it is no longer determined.
+
+bernhard-jablan:
+  statement: >
+    The unknotting number can be computed by descent: u(K) = 1 + min u(K'),
+    over all K' obtained from a minimal-crossing diagram of K by one crossing
+    change.
+  status: refuted
+  asserted_by: "Bernhard 1994; Jablan"
+  refuted_by: "Brittenham-Hermiller, A counterexample to the Bernhard-Jablan unknotting conjecture"
+  notes: >
+    Bernhard-Jablan descent generated a large fraction of the published upper
+    bounds for 11- to 14-crossing knots. As an *upper* bound the descent is
+    still valid -- a descent of length n exhibits n crossing changes -- so
+    ingested BJ bounds are sound as bounds. What is refuted is that the descent
+    is always sharp, so a BJ value must never be ingested as a determination.
