@@ -6,7 +6,7 @@
 //! move. `sigma` rotates counterclockwise about a crossing, `alpha` pairs the
 //! two ends of an arc. See `schema/conventions.md`.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 pub type Dart = usize;
 
@@ -394,15 +394,47 @@ impl Diagram {
         self.signs().iter().map(|&s| s as i64).sum()
     }
 
-    /// Signed Gauss code read from `start`, forwards or backwards.
-    fn gauss_from(&self, start: Dart, forward: bool, signs: &[i8]) -> String {
-        let mut order: HashMap<usize, usize> = HashMap::new();
+    /// Link components: orbits of the darts under `alpha` and `sigma^2`, i.e.
+    /// "same strand". Distinct from [`Diagram::map_components`], which is about
+    /// connectedness of the diagram.
+    fn dart_components(&self) -> (Vec<usize>, usize) {
+        let mut comp = vec![usize::MAX; 4 * self.n];
+        let mut k = 0;
+        for s in 0..4 * self.n {
+            if comp[s] != usize::MAX {
+                continue;
+            }
+            let mut stack = vec![s];
+            while let Some(d) = stack.pop() {
+                if comp[d] != usize::MAX {
+                    continue;
+                }
+                comp[d] = k;
+                stack.push(self.alpha[d]);
+                stack.push(sigma2(d));
+            }
+            k += 1;
+        }
+        (comp, k)
+    }
+
+    /// One component's signed Gauss code, walked from `start` until it closes.
+    /// Crossing ids come from `ids`, numbered by order of first visit across
+    /// the whole diagram, so a crossing shared with an earlier component keeps
+    /// the id it was already given.
+    fn segment(
+        &self,
+        start: Dart,
+        forward: bool,
+        signs: &[i8],
+        ids: &mut HashMap<usize, usize>,
+    ) -> String {
         let mut out = String::new();
         let mut d = start;
-        for _ in 0..2 * self.n {
+        loop {
             let c = cr(d);
-            let next_id = order.len() + 1;
-            let id = *order.entry(c).or_insert(next_id);
+            let next_id = ids.len() + 1;
+            let id = *ids.entry(c).or_insert(next_id);
             out.push(if is_over(d) { 'O' } else { 'U' });
             out.push_str(&id.to_string());
             out.push(if signs[c] > 0 { '+' } else { '-' });
@@ -411,37 +443,153 @@ impl Diagram {
             } else {
                 sigma2(self.alpha[d])
             };
+            if d == start {
+                break;
+            }
         }
         out
     }
 
-    /// Lexicographically minimal signed Gauss code over all starting darts and
-    /// both traversal directions, and both mirrors when `mirror_invariant`.
-    /// This is the primary key. See `schema/conventions.md` §3.
-    pub fn canon(&self, mirror_invariant: bool) -> String {
+    /// Canonical code for this diagram with its own handedness.
+    ///
+    /// Minimised over every starting dart, both traversal directions, and —
+    /// for a link — every order in which the components may be listed, with
+    /// `|` between components. Because crossing ids depend on the order of
+    /// first visit, and a crossing shared between two components is numbered by
+    /// whichever is walked first, the per-component codes are not independent
+    /// and the minimisation has to be joint.
+    ///
+    /// Done by keeping a frontier of exactly those partial codes that tie for
+    /// the minimum, which collapses to the diagram's symmetry group rather than
+    /// enumerating `c!` orderings.
+    fn canon_oriented(&self, signs: &[i8]) -> String {
         if self.n == 0 {
-            return "U".to_string();
+            return vec!["U"; self.free_loops].join("|");
         }
-        let signs = self.signs();
+        let (comp, ncomp) = self.dart_components();
+        let mut frontier: Vec<(String, HashMap<usize, usize>, Vec<bool>)> =
+            vec![(String::new(), HashMap::new(), vec![false; ncomp])];
+
+        for round in 0..ncomp {
+            let mut best: Option<String> = None;
+            let mut next: Vec<(String, HashMap<usize, usize>, Vec<bool>)> = Vec::new();
+            let mut seen: HashSet<String> = HashSet::new();
+            for (code, ids, used) in &frontier {
+                for d in 0..4 * self.n {
+                    if used[comp[d]] {
+                        continue;
+                    }
+                    for &forward in &[true, false] {
+                        let mut ids2 = ids.clone();
+                        let seg = self.segment(d, forward, signs, &mut ids2);
+                        let mut code2 = String::with_capacity(code.len() + seg.len() + 1);
+                        code2.push_str(code);
+                        if round > 0 {
+                            code2.push('|');
+                        }
+                        code2.push_str(&seg);
+                        let better = match &best {
+                            None => true,
+                            Some(b) => code2 < *b,
+                        };
+                        if better {
+                            best = Some(code2.clone());
+                            next.clear();
+                            seen.clear();
+                        } else if Some(&code2) != best.as_ref() {
+                            continue;
+                        }
+                        let mut used2 = used.clone();
+                        used2[comp[d]] = true;
+                        let mut key: Vec<(usize, usize)> =
+                            ids2.iter().map(|(a, b)| (*a, *b)).collect();
+                        key.sort_unstable();
+                        let key = format!("{:?}{:?}", key, used2);
+                        if seen.insert(key) {
+                            next.push((code2, ids2, used2));
+                        }
+                    }
+                }
+            }
+            frontier = next;
+        }
+        let mut code = frontier
+            .into_iter()
+            .next()
+            .map(|(code, _, _)| code)
+            .unwrap_or_default();
+        // Crossingless circles live outside the dart structure, so they have to
+        // be appended explicitly: a knot and that knot split off from a free
+        // circle are different links and must not share a key.
+        for _ in 0..self.free_loops {
+            code.push_str("|U");
+        }
+        code
+    }
+
+    /// Crossing signs under a given choice of direction for each component:
+    /// bit `i` of `mask` reverses component `i`. Reversing a strand swaps
+    /// incoming and outgoing at every dart along it.
+    fn signs_with(&self, comp: &[usize], base: &[bool], mask: u32) -> Vec<i8> {
+        let inc = |d: Dart| base[d] ^ ((mask >> comp[d]) & 1 == 1);
+        (0..self.n)
+            .map(|c| {
+                let q = if inc(dart(c, 0)) { 0 } else { 2 };
+                if inc(dart(c, q + 3)) {
+                    1
+                } else {
+                    -1
+                }
+            })
+            .collect()
+    }
+
+    /// Canonical code that does not depend on how the components happen to be
+    /// oriented.
+    ///
+    /// This matters only for links. Crossing signs of a link depend on the
+    /// direction chosen for each component: reversing one component negates
+    /// every crossing *between* components, while self-crossings are
+    /// unaffected. Nothing in a PD code fixes those directions, so a key that
+    /// depended on them would change under relabelling — which is exactly what
+    /// randomised testing against PD round-trips caught.
+    ///
+    /// So minimise over all `2^c` orientations. For a knot every crossing is a
+    /// self-crossing, both choices give identical signs, and the key is
+    /// unchanged.
+    ///
+    /// The consequence to be aware of: this key identifies *unoriented* link
+    /// diagrams. That is right for unknotting and unlinking claims, and wrong
+    /// for anything that depends on orientation, such as linking number, which
+    /// would need to pin the orientation separately.
+    fn canon_unoriented(&self) -> String {
+        let (comp, ncomp) = self.dart_components();
+        let base = self.orientation();
+        let bits = ncomp.min(16);
         let mut best: Option<String> = None;
-        let mut consider = |s: String| {
-            if best.as_ref().map_or(true, |b| s < *b) {
-                best = Some(s);
-            }
-        };
-        for start in 0..4 * self.n {
-            consider(self.gauss_from(start, true, &signs));
-            consider(self.gauss_from(start, false, &signs));
-        }
-        if mirror_invariant {
-            let flipped: Vec<i8> = signs.iter().map(|s| -s).collect();
-            let m = self.mirror();
-            for start in 0..4 * self.n {
-                consider(m.gauss_from(start, true, &flipped));
-                consider(m.gauss_from(start, false, &flipped));
+        for mask in 0..(1u32 << bits) {
+            let code = self.canon_oriented(&self.signs_with(&comp, &base, mask));
+            if best.as_ref().map_or(true, |b| code < *b) {
+                best = Some(code);
             }
         }
-        best.unwrap()
+        best.unwrap_or_default()
+    }
+
+    /// Lexicographically minimal signed Gauss code: the primary key. Correct for
+    /// links as well as knots. When `mirror_invariant`, also minimised over the
+    /// mirror, which is right for mirror-invariant claims such as `u`.
+    pub fn canon(&self, mirror_invariant: bool) -> String {
+        let here = self.canon_unoriented();
+        if !mirror_invariant {
+            return here;
+        }
+        let there = self.mirror().canon_unoriented();
+        if there < here {
+            there
+        } else {
+            here
+        }
     }
 
     /// Reflect every crossing: over becomes under everywhere.

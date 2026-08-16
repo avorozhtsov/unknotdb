@@ -139,6 +139,73 @@ mod tests {
         assert!(Diagram::from_cyclic_braid(3, &[1, 3, 2]).is_ok());
     }
 
+    /// `canon` used to walk 2n steps from one dart, which on a link cycles
+    /// inside a single component and repeats instead of covering the diagram.
+    /// It is the primary key, so silent nonsense there is the worst kind of bug.
+    #[test]
+    fn canon_is_correct_for_links() {
+        let hopf = Diagram::from_braid(2, &[1, 1]).unwrap();
+        let code = hopf.canon(false);
+        assert_eq!(code.matches('|').count(), 1, "two components: {}", code);
+        // each of the two crossings is met once by each component
+        assert_eq!(code.matches('1').count(), 2, "{}", code);
+        assert_eq!(code.matches('2').count(), 2, "{}", code);
+
+        // a split diagram: two independent kinks, no shared crossings
+        let split = Diagram::from_braid(4, &[1, 3]).unwrap();
+        assert_eq!(split.canon(false), "O1+U1+|O2+U2+");
+
+        // unlinks are distinguished by component count
+        assert_eq!(Diagram::from_braid(2, &[]).unwrap().canon(false), "U|U");
+        assert_eq!(Diagram::from_braid(3, &[]).unwrap().canon(false), "U|U|U");
+    }
+
+    /// A knot and that knot split off from a free circle are different links.
+    /// Free circles are tracked outside the dart structure, so they have to be
+    /// appended to the key explicitly or the two collide.
+    #[test]
+    fn a_free_circle_changes_the_key() {
+        let trefoil = Diagram::from_braid(2, &[1, 1, 1]).unwrap();
+        let with_circle = Diagram::from_braid(3, &[1, 1, 1]).unwrap();
+        assert_eq!(with_circle.free_loops, 1);
+        assert_eq!(with_circle.components(), 2);
+        assert_ne!(trefoil.canon(true), with_circle.canon(true));
+        assert_eq!(
+            with_circle.canon(true),
+            format!("{}|U", trefoil.canon(true))
+        );
+    }
+
+    /// Crossing signs of a link depend on the direction chosen for each
+    /// component: reversing one negates every crossing between components.
+    /// Nothing in a PD code fixes those directions, so a key that depended on
+    /// them changes under relabelling. These words are ones that actually broke
+    /// before the key was minimised over component orientations.
+    #[test]
+    fn link_keys_do_not_depend_on_component_orientation() {
+        for (s, w) in [
+            (4, vec![-2, 3, -1, -3]),
+            (4, vec![2, 2, 1, -1, 3, -1, 3]),
+            (4, vec![2, -2, -1, 1, 3, -2, -2]),
+        ] {
+            let d = Diagram::from_braid(s, &w).unwrap();
+            assert!(d.canon(false).contains('|'), "expected a link: {:?}", w);
+            let relabelled = Diagram::from_pd(&d.to_pd()).unwrap();
+            assert_eq!(d.canon(false), relabelled.canon(false), "braid {:?}", w);
+            assert_eq!(d.canon(true), relabelled.canon(true), "braid {:?}", w);
+        }
+    }
+
+    /// The key must not depend on how the diagram happens to be labelled.
+    #[test]
+    fn link_keys_survive_relabelling() {
+        for (s, w) in [(2, vec![1, 1]), (4, vec![1, 3]), (3, vec![1, 1, 2, -1])] {
+            let d = Diagram::from_braid(s, &w).unwrap();
+            let round_tripped = Diagram::from_pd(&d.to_pd()).unwrap();
+            assert_eq!(d.canon(true), round_tripped.canon(true), "braid {:?}", w);
+        }
+    }
+
     #[test]
     fn hopf_link_has_two_components() {
         let d = Diagram::from_braid(2, &[1, 1]).unwrap();

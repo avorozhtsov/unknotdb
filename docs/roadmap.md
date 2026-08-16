@@ -16,8 +16,9 @@
 - Certificates for 3_1, 4_1, 5_1, 7_1, 8_19, 9_1, 10_124 with costs
   1, 1, 2, 3, 3, 4, 4 -- every one matching the published value, and the three
   torus knots matching Kronheimer-Mrowka's (p-1)(q-1)/2.
-- `[lib]` + `[[bin]]` split, so the crate can be depended on. 32 tests: 27 unit,
+- `[lib]` + `[[bin]]` split, so the crate can be depended on. 36 tests: 31 unit,
   4 integration exercising the public API as an external caller, 1 doctest.
+- Canonical keys correct for links, not just knots.
 - Cyclic (cylinder) braids: `cbraid:n:...`, generators mod `n`, where `+/-n` is
   the seam band. Differentially tested against rf-knots over 750 random words
   and 1081 seam generators with zero disagreements.
@@ -141,24 +142,31 @@ below):
   reduced to the unknot under this verifier's own R1/R2/R3 — independent
   agreement with rf-knots, no shared code.
 
-## Known gaps in link support
+## Link support
 
-Two bugs, both found by running the verifier over real corpora rather than by
-reading the code. Neither affects knots, and every certificate in `certs/` is a
-knot, but both are real.
+Three bugs, all found by running the verifier over real corpora and by
+randomised differential testing rather than by reading the code. None affected
+knots — every certificate in `certs/` still verifies byte-for-byte — but all
+three were real.
 
-- **`canon` is wrong for links.** It walks `2n` steps from one dart, which on a
-  multi-component diagram cycles inside a single component and repeats instead
-  of covering the diagram. `unknotdb canon braid:3:1,1,1` returns ten entries
-  over two distinct crossing indices for a five-crossing diagram. This is silent
-  corruption of the *primary key*, so it must not stay. The fix is a design
-  decision rather than a patch: crossing indices are shared between components,
-  so per-component codes are not separable and keying a link means choosing a
-  canonical ordering over components. Until that is designed, `canon` should
-  refuse multi-component input rather than return nonsense.
+- **`canon` was wrong for links** — fixed. It walked `2n` steps from one dart,
+  which on a multi-component diagram cycles inside a single component and
+  repeats instead of covering the diagram. Now one code per component with `|`
+  between them, minimised jointly over component orderings because a shared
+  crossing takes its id from whichever component is walked first.
+- **The key depended on component orientation** — fixed. Reversing one
+  component negates every crossing between components, so relabelling silently
+  changed the key. Now minimised over all `2^c` orientations, which makes it an
+  unoriented-link key. Caught by randomised PD round-trip testing, not by
+  inspection.
+- **A free circle did not change the key** — fixed. A knot and that knot split
+  off from an unknotted circle are different links and were colliding.
 - **Split diagrams were rejected** — fixed. Euler's formula holds per connected
-  component, so a split closure such as `sigma_1 sigma_3` in `B_4` has
-  `n + 2k` faces, not `n + 2`.
+  component, so `sigma_1 sigma_3` in `B_4` has `n + 2k` faces, not `n + 2`.
+
+Still open: PD notation cannot express a crossingless circle, so a subject with
+free circles cannot be written faithfully in `subject.pd`. The format needs an
+explicit component count before it can carry one.
 
 ## v0.5 — corpus
 

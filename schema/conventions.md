@@ -79,6 +79,30 @@ Secondary, non-authoritative cross-references stored alongside:
 Cross-references are *labels*. A wrong `knotinfo:` field is a metadata bug; a
 wrong canonical signature is a corrupt record.
 
+## 3a. Links
+
+The canonical signature covers links as well as knots: one signed Gauss code per
+component, `|` between them, crossings numbered by order of first visit across
+the whole traversal. Because a crossing shared between two components takes its
+id from whichever component is walked first, the minimisation is joint over
+component orderings, not per component.
+
+Two consequences worth stating plainly.
+
+**The key identifies unoriented links.** Crossing signs of a link depend on the
+direction chosen for each component — reversing one negates every crossing
+between components, while self-crossings are unaffected — and nothing in a PD
+code fixes those directions. The key is therefore minimised over all `2^c`
+orientations. That is correct for unknotting and unlinking claims, and wrong for
+anything orientation-dependent such as linking number, which would have to pin
+the orientation in a separate field.
+
+**PD notation cannot express a crossingless circle.** A split unknotted
+component survives in the key, appended as `|U`, but it is lost by a PD
+round-trip. So a certificate whose subject has free circles cannot currently be
+written down faithfully in `subject.pd`; such a subject needs an explicit
+component count before the format can carry it.
+
 ## 4. No pairwise equivalences
 
 A certificate never relates two arbitrary representations to each other. Each
