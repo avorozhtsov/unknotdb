@@ -331,6 +331,21 @@ mod tests {
         assert_eq!(red.free_loops, 1);
     }
 
+    /// B_1 has no generators; its closure is one circle, the unknot. Found by
+    /// running the parser over rf-knots' evidence corpus, which seeds unknot
+    /// rungs as one-strand braids.
+    #[test]
+    fn one_strand_braid_is_the_unknot() {
+        let d = Diagram::from_braid(1, &[]).expect("B_1 is legal");
+        assert_eq!(d.n, 0);
+        assert_eq!(d.free_loops, 1);
+        assert_eq!(d.components(), 1);
+        assert_eq!(d.canon(true), "U");
+        // ...but B_1 has no generators, so any letter is still out of range.
+        assert!(Diagram::from_braid(1, &[1]).is_err());
+        assert!(Diagram::from_braid(0, &[]).is_err());
+    }
+
     #[test]
     fn hopf_link_has_two_components() {
         let d = Diagram::from_braid(2, &[1, 1]).unwrap();

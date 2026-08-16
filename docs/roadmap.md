@@ -97,18 +97,58 @@ blow the search space up, and simplification heuristics are a separate problem
 from verification. The verifier accepts R2+ traces from any producer;
 `a_certificate_using_r2_plus_verifies` covers that path.
 
-## v0.4 — corpus
+## v0.4 — alphabet M (Markov)
 
+**Reprioritised from v0.5 on evidence, not taste.** Running the verifier over
+rf-knots' evidence corpus (100 knots with replayable paths) measured how its
+semantic move alphabet lands on this one:
+
+| rf-knots move    | count | unknotdb |
+|------------------|-------|----------|
+| REDUCE           |   408 | `R2-` |
+| CROSSING_CHANGE  |   368 | `XC` |
+| BRAID            |   116 | `R3` |
+| COMMUTE          |    36 | planar isotopy, no move needed |
+| INSERT           |    28 | `R2+` |
+| DESTABILIZE      |   473 | **Markov** |
+| STABILIZE_NEG    |   228 | **Markov** |
+
+Markov moves are 701 of 1657 moves, 42% of everything, and **0 of 100 paths are
+ingestible without them**. Corpus work that depends on ingesting real evidence
+is therefore blocked on `M`, not the other way round.
+
+The same measurement explains a search failure. Against the 72-knot DKT 2026
+benchmark, the bootstrap search reproduced only 1 of 30 published unknotting
+numbers, exhausting in milliseconds even on minimal-crossing diagrams at
+`--r3 4`. Destabilisation is how a braid closure actually shrinks; without it
+the search stalls on 11- to 13-crossing knots. So `M` buys the search as much as
+it buys the verifier.
+
+Cross-check results worth keeping (see also the note on differential testing
+below):
+
+- 144 external encodings (72 PD + 72 braid words) parsed, all planar and
+  1-component; 100/100 evidence start words after the `B_1` fix.
+- Zero soundness violations: over 30 knots with published `u`, the search never
+  found an unknotting shorter than the literature. This is the check that would
+  have caught a bad R3 or R2+ rewiring.
+- 98/98 non-trivial states taken immediately after the last crossing change
+  reduced to the unknot under this verifier's own R1/R2/R3 — independent
+  agreement with rf-knots, no shared code.
+
+## v0.5 — corpus
+
+- Ingest rf-knots evidence as certificates, once `M` lands.
 - Ingest KnotInfo bounds as `cited` / `pending` records (via
   `soehms/database_knotinfo` CSV, recording the source chirality convention).
 - Ingest Brittenham's 12- and 13-crossing crossing-change data; re-verify at L2
   what can be re-verified, and say plainly what cannot.
 - Quasipositive braid certificates: cheapest to verify, generated directly from
-  a braid pipeline, and sharp for slice genus via slice–Bennequin.
+  a braid pipeline, and sharp for slice genus via slice-Bennequin.
 
-## v0.5 — alphabets M and B
+## v0.6 — alphabet B (bands)
 
-Markov moves, then bands. `slice_genus_le` computes the genus from the trace via
+`slice_genus_le` computes the genus from the trace via
 `chi = births + deaths - bands` rather than trusting the author's number.
 
 ## Later
@@ -120,6 +160,12 @@ Markov moves, then bands. `slice_genus_le` computes the genus from the trace via
   the blobs, or store `(seed, tool version, input hash)` and regenerate.
 - The semantic-move layer used in rf-knots, as an *optional authoring* format
   with a lossless compiler down to `R`/`M`. Verification must never depend on it.
+- Expose a `[lib]` target. The crate is bin-only today, so nothing can depend on
+  it; that blocks every form of reuse.
+- Keep a second, independent implementation of the action semantics and check
+  the two against each other in CI. The 98/98 agreement above is only evidence
+  because rf-knots and unknotdb share no code. Collapsing to one implementation
+  would delete the evidence along with the duplication.
 - Generated SQLite/DuckDB build artifact; static site and read-only API on top.
 
 ## Deliberately not planned

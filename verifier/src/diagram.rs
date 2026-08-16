@@ -116,9 +116,12 @@ impl Diagram {
     /// `schema/conventions.md`. Dart positions are
     /// then rotated so that the under-strand sits at positions 0 and 2, which
     /// is the invariant the rest of the crate relies on.
+    /// `B_1` is legal and is the unknot: it has no generators, so the word must
+    /// be empty and the closure is a single circle. Real corpora do contain it
+    /// — rf-knots seeds unknot rungs that way — so rejecting it is wrong.
     pub fn from_braid(strands: usize, word: &[i32]) -> Result<Diagram, String> {
-        if strands < 2 {
-            return Err("braid: need at least 2 strands".into());
+        if strands < 1 {
+            return Err("braid: need at least 1 strand".into());
         }
         for &g in word {
             let j = g.unsigned_abs() as usize;
