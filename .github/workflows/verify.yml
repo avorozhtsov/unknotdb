@@ -18,6 +18,20 @@ jobs:
         run: cargo test --manifest-path verifier/Cargo.toml
       - name: fmt
         run: cargo fmt --manifest-path verifier/Cargo.toml --check
+      - name: runtime unit tests
+        run: cargo test --manifest-path runtime/Cargo.toml
+      - name: runtime fmt
+        run: cargo fmt --manifest-path runtime/Cargo.toml --check
+      - name: runtime clippy
+        run: cargo clippy --manifest-path runtime/Cargo.toml --all-targets -- -D warnings
+      - name: policy helper syntax
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          for name in ("freeze_q_policy_checkpoint.py", "q_policy_oracle.py"):
+              path = Path("tools") / name
+              compile(path.read_text(), str(path), "exec")
+          PY
       # Rust ignores SIGPIPE by default, which turns `unknotdb ... | head` into
       # a panic. Enough output to overrun the pipe buffer, so the signal really
       # fires; the binary must die quietly, writing nothing to stderr.

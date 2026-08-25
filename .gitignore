@@ -3,3 +3,8 @@ site/build/
 __pycache__/
 *.pyc
 .DS_Store
+*.sqlite
+*.pt
+outputs/smoke-*
+outputs/*-regenerated.*
+outputs/*regression*.txt

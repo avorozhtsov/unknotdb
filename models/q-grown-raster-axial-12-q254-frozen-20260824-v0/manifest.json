@@ -1,0 +1,19 @@
+{
+  "checkpoint": "checkpoint.pt",
+  "checkpoint_bytes": 1036837,
+  "checkpoint_sha256": "36d1122f5494d502e556994083a1a69adf1643d5be95cd9f80ffc13b68e68d63",
+  "controller_initial_state": "canonical-clean-v0",
+  "frozen_at": "2026-08-24T22:13:50+00:00",
+  "lineage": "q-grown-raster-axial-12",
+  "model_id": "q-grown-raster-axial-12:Q254:36d1122f5494d502e556994083a1a69adf1643d5be95cd9f80ffc13b68e68d63",
+  "objective_ratio": 1000,
+  "processed_count": 23,
+  "processed_order_sha256": "357573e412b7859586b45379165480f1e2ba8deb63b862c4d22f22b33119f0c7",
+  "q_generation": "Q254",
+  "schema": "unknotdb-frozen-policy-manifest-v0",
+  "scientist": "raster-axial-12",
+  "source_q_state": "/Users/artemvorozhtsov/projects/pgx-mcts-bench/artifacts/local-q-skm-ablation-20260817/continuation/q4000-v1-population-20260818/q254-fast6-20260823/branches/q-grown-raster-axial-12/q50-3-updated-scheduled-no-sharing-bounded-repair-v2/state.pt.gz",
+  "source_q_state_sha256": "5cb60218a2665482c0b2695cc98ee79cb17c6f4c94ce8d14f1101a460bfdb0aa",
+  "source_snapshot_semantics": "single-open-read-of-possibly-live-atomic-state",
+  "training_performed": false
+}

@@ -185,6 +185,36 @@ explicit component count before it can carry one.
 
 ## Later
 
+### RF Knots 4k coverage gate for policy upgrades
+
+Before publishing a graph snapshot for a new neural checkpoint, rerun a
+read-only coverage regression over the roughly 4,000 knots in the RF Knots
+project. This is separate from reattesting the vertices already present in an
+Unknot DB snapshot.
+
+The planned gate is:
+
+1. freeze a versioned RF Knots corpus manifest containing a stable knot ID and
+   one or more of its simplest natural cyclic torus-braid representations;
+2. independently normalize and preprocess every selected representation with
+   the candidate checkpoint's exact L1000/reducer/adapter contract;
+3. perform ordinary exact-key Unknot DB lookup for every successfully produced
+   stopping point;
+4. require at least one selected representation of every corpus knot to hit the
+   candidate snapshot;
+5. compare old-model and new-model results, recording input representation,
+   old and new stopping keys, zero-CC migration witness, lookup result and
+   reason for every loss of coverage;
+6. do not publish the new model/snapshot pair while any corpus knot has no hit.
+
+This check is necessary even after complete internal vertex reattestation. A
+new policy can advance a formerly terminal preprocessing point through zero-CC
+moves, producing a new stopping key that is absent from the compacted graph.
+The 4k gate detects that external reachability regression. Its corpus-selection
+rule and manifest format must be frozen before the first baseline run so a
+model upgrade cannot improve its score merely by changing which input
+representations are tested.
+
 - Nightly full re-verification; per-PR verification of changed certificates only.
   At ~1-10 ms per trace, 60k certificates is minutes and 1.7M is hours, so the
   split matters.
@@ -196,7 +226,47 @@ explicit component count before it can carry one.
   the two against each other in CI. The 98/98 agreement above is only evidence
   because rf-knots and unknotdb share no code. Collapsing to one implementation
   would delete the evidence along with the duplication.
-- Generated SQLite/DuckDB build artifact; static site and read-only API on top.
+- Populate the implemented immutable SQLite/in-memory graph runtime with real,
+  independently replayed proof macros. The first unknot/trefoil bootstrap and
+  monotone `U_upper(source) <- cc(edge) + U_upper(target)` relaxation are now
+  implemented. Bounded deterministic frontier scrambles, durable manifests and
+  generic state-aware inverse-witness compilation are also implemented and have
+  produced the first live frontier snapshot. Validated multi-generation resume
+  and independent ACS10 candidate retention/recomputation are now implemented;
+  two resumed generations have produced a validated 6-node, 5-edge proof
+  graph. The completed `strands <= 3`, `word_length <= 10` census covers all
+  37,958 normalized seeds in a 2,303-node, 2,302-edge graph and establishes
+  pilot bounds of 16/4 policy steps and 65,536/16,384 depth-three scramble
+  states/candidates. Reducer-output grouping reproduces the length-8 semantic
+  manifest exactly and reduces its policy runs from 3,008 to 328 per pass.
+  Real-graph benchmarks now measure 242k file/mmap SQLite lookups/s, 1.46M
+  deserialized SQLite lookups/s and 13.6M hash lookups/s. Deferring ACS10
+  refresh to `O(V log V + E)` and deferring its materialization to one batch
+  boundary reduced a complete 2,302-edge rebuild from 5.97 seconds to 20.1 ms
+  with identical logical output. The middle-word DESTABILIZE inverse now uses
+  an exact positional stabilization; the rank-10 retry completed with 110
+  inserted nodes and 374 accepted ACS10 improvements. Clean-controller
+  preprocessing now batches JAX state creation and uses CPU network
+  microbatches of eight. On the length-8 census this reduced grouped
+  preprocessing from about 1.962 s to 0.379 s with an identical semantic
+  manifest. Frontier candidates now use the same scheduler in bounded groups of
+  256; on rank 10 the oracle consumed about 1.864 s of a 21.06 s run. Next:
+  the completed `strands <= 4`, `word_length <= 10` stage covers all 286,334
+  normalized seeds in a validated 68,645-node, 69,018-edge graph. Storage
+  schema v2 deduplicates its 1,656 proof programs, splits stable keys from dense
+  hot rows, and packs B4 words at two letters per byte; the same logical graph
+  is now 12.43 MiB instead of 24.74 MiB.
+  Its bounded acyclic completion tries preferred CC first and uses depths 2-4
+  one-CC proof macros only to escape closed greedy components; macro
+  preprocessing is batched. This first snapshot is coverage-first: all routes
+  replay, but its maximum `U_upper=2007` is intentionally recorded as a poor
+  bound requiring graph improvement, not presented as an unknotting estimate.
+  The in-memory backend remains in the multi-million lookup/s range. Exact edge
+  identity now has an expected-O(1) hash index with bytewise collision checks;
+  bulk insertion already defers ACS10 materialization to one batch boundary.
+  Next: run a short-witness improvement pass at this scale, then continue
+  controlled frontier population. Static site and read-only API come after the
+  population loop is reproducible.
 
 ## Deliberately not planned
 

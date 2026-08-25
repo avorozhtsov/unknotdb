@@ -1,0 +1,24 @@
+[package]
+name = "unknotdb-runtime"
+version = "0.1.0"
+edition = "2021"
+description = "Immutable SQLite snapshots and in-memory lookup for unknotdb"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+arc-swap = "1.7.1"
+rusqlite = { version = "0.40.2", default-features = false, features = ["bundled", "cache", "serialize"] }
+unknotdb = { path = "../verifier" }
+
+[lib]
+name = "unknotdb_runtime"
+path = "src/lib.rs"
+
+[[bin]]
+name = "unknotdb-runtime"
+path = "src/main.rs"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+

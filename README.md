@@ -67,6 +67,7 @@ point of the project.
 ```
 schema/     certificate + claim format, conventions        (normative)
 verifier/   the Rust verifier crate; binary `unknotdb`
+runtime/    generated SQLite snapshots + in-memory hot lookup
 certs/      the corpus, one file per claim
 tools/      Python: ingest, generators, site build
 docs/       design notes
@@ -81,6 +82,28 @@ deleted and regenerated at any time.
 Early. Alphabets `R` (R1±, R2±, R3) and `X` (plus crossing changes) are
 complete. Markov and band moves are specified but not implemented, and are
 rejected rather than trusted. See [`docs/roadmap.md`](docs/roadmap.md).
+
+The standalone graph runtime is now prototyped separately from the verifier; see
+[`docs/graph-runtime-v0.md`](docs/graph-runtime-v0.md). Its benchmark generator
+uses synthetic, explicitly non-proof edges. Preprocessing uses an existing,
+inference-only Q254 checkpoint for `q-grown-raster-axial-12`; this project did
+not train a network. The checkpoint SHA-256 is part of every production snapshot
+contract, and all vertices must be reattested before a new model generation is
+published. Production keys are mirror orbits: a chiral knot and its mirror share
+one value node, while a replayable mirror bit transports the stored action route
+back to the submitted chirality. The first real snapshot is populated from the
+unknot by a checked scramble and monotone Bellman relaxation; synthetic data is
+still used only for scale benchmarks.
+SQLite schema v1 stores each distinct proof program and its binary SHA-256 once;
+edges contain only a compact program ID, and the validator version is
+snapshot-wide metadata. Schema v2 splits the key lookup from dense hot nodes and
+packs small braid alphabets at two letters per byte without changing canonical
+keys. The runtime reads legacy schemas v0/v1 and can rewrite them with
+`compact-snapshot INPUT OUTPUT` without rerunning the policy.
+The production braid origin/key/action convention is normative in
+[`schema/graph-representation-v0.md`](schema/graph-representation-v0.md).
+The mandatory initial-only reducer and normalization-only policy transitions are specified in
+[`schema/preprocessing-v0.md`](schema/preprocessing-v0.md).
 
 ## Naming
 

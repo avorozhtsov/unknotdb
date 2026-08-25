@@ -1,0 +1,16 @@
+artifact=unknotdb-natural-b4-length10-q254-complete-schema2-v1.sqlite
+schema_version=2
+sha256=2ca737f26640973cd0daf4919484472d823efce248ed184cba7e88064df6384b
+bytes=13029376
+nodes=68645
+edges=69018
+programs=1656
+program_bytes=83424
+representation_bytes=633910
+representation_average_bytes=9.2346128632821
+source_schema_version=1
+source_sha256=eb27a694dc38bae951d1804bc5dd8b4893bd2266317fc3f38170d6ab3f5668f3
+logical_node_hot_delta=0
+logical_policy_stops_delta=0
+logical_edge_semantics_delta=0
+decoded_representation_key_validation=pass

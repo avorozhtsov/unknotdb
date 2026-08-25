@@ -1,0 +1,16 @@
+unknotdb-action-choice-score-10-report-v0
+snapshot_source_generation	selective-b5-v0-from-bidirectional-v0-from-quality-frontier-v0-from-compact-schema2-from-compact-schema1-from-complete-natural-b4-length10-v1-from-resume-complete-natural-b3-length10-v1-from-complete-natural-b3-length8-v1-from-complete-natural-b3-length6-v1-from-complete-natural-b2-length10-v0-from-resume-resume-unknot-frontier-d3-states512-candidates8-v0-rank1-generations1-v1-rank2-generations1-v1-rank10-generations1-v1
+definition	ACS10(v)=10*strands(v)+5*U(v)+word_length(v)
+semantics	Action-Choice Score 10
+eligibility	ACS10(target)<ACS10(source)+cc(edge) and target_rank<source_rank
+selection	min(ACS10(target)+cc,ACS10(target),target_rank,target_key,edge_id)
+independence	next_acs10 is recomputed from all verified immutable edges independently of next_unknot
+nodes	68648
+edges	69434
+routes	68647	5	0	0
+sample_header	source_key	u_upper	acs10	u_target	acs10_target	u_edge_cc	acs10_edge_cc
+different	0e5d846af4294ba3bbfc625d488d2c30a8731f450cc7bc033556d293f332af00	2	57	2cc94bcaabdb0f35c0a81bafd02dc1d73e91d40fb58e1ad82703bffeedf00cb2	75073bd7337da56adf34d1f0380db819624ce3cc175745d08e043cc3a7cca814	1	1
+different	addd5839078e9d14635c2618c75ecd8eb7a1b5131e52bbdc2c01e24d7212f00a	1031	5206	903d089d401a7cf0ef8369243bd9caafcb48f454dc7b0abaeb2e85084250dcb6	d3d15d39ff88f84cb7bd7597f26ac6820da5fe5c1e0765771f572174387cd6d1	1	1
+different	b49758509caa3fc0fcef3f51aaabc929bc73fff10ac6a5f775ffffa46141a80e	2	46	4207e83cd633f43d66d4b1b39c7cf1ee5201e871fceac687cf98c1d3256c59f4	c6c7a21a4038f07a3adf79d1f92a6f6e885d0baf284706a4c5f16acf20058b3d	1	1
+different	d62fb35022814c15adced7b6731e017f0b0c1d810c687e0ebf92d6c2141b748a	2	57	2cc94bcaabdb0f35c0a81bafd02dc1d73e91d40fb58e1ad82703bffeedf00cb2	d287b18fa69dab5ed56e66626b9a15fedd25b7969a719b234e76dbf2077558ba	1	1
+different	f6d213a9a4ccdf39853fbc3d946da8d4c98da49008aec421075215a24d4408b5	2	48	049a9a564dfdc831be693ae5324c947532539586eeda46e79e5e25cbae33c4ba	c6c7a21a4038f07a3adf79d1f92a6f6e885d0baf284706a4c5f16acf20058b3d	1	1
