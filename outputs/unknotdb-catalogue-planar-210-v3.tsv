@@ -1,0 +1,255 @@
+format	unknotdb-catalogue-planar-chain-import-v0
+source_snapshot_sha256	c2d2dd17a792002372c7902ef53853f8677747a9ae1e2aaa19e80c56344421f3
+policy_model_id	q-grown-raster-axial-12:Q254:36d1122f5494d502e556994083a1a69adf1643d5be95cd9f80ffc13b68e68d63
+max_policy_plies	128
+max_semantic_moves	32
+row	knot_id	status	old_u	new_u	cc_count	certificate_id	detail
+corpus	outputs/unknotdb-catalogue-reidemeister-c3-c9-v0.json	f3620f939bfc1ebca0d1568bb28bdc5aba8dde46d3e2b0d367f0d0a2ad31998b	84
+result	knot:3_1	already-sufficient	1	1	1	-	graph bound is already no larger than witness cost
+result	knot:4_1	already-sufficient	1	1	1	-	graph bound is already no larger than witness cost
+result	knot:5_1	already-sufficient	2	2	2	-	graph bound is already no larger than witness cost
+result	knot:5_2	improved	3	1	1	ee0eae9eebe452907be50ef44b5fd834edcdab28adee950eef633f5efebf4de7	verified chain
+result	knot:6_1	improved	5	1	1	c2781ad5ccf06586b2fda7058c1b777c8c8efc854125241f95c2998364d0b0da	verified chain
+result	knot:6_2	already-sufficient	1	1	1	-	graph bound is already no larger than witness cost
+result	knot:6_3	already-sufficient	1	1	1	-	graph bound is already no larger than witness cost
+result	knot:7_1	already-sufficient	3	3	3	-	graph bound is already no larger than witness cost
+result	knot:7_2	improved	9	1	1	83ca49b6369400ea02d0e9f904374685df610fb2be559a655011d43206d63dd0	verified chain
+result	knot:7_3	improved	4	2	2	38287c4319445bd37d5a4fb9f63e278519c77178373c62c2aa8777c8015dd75b	verified chain
+result	knot:7_4	improved	11	2	2	808f8b12e9632a538d2742d0f6d97e8238e39addf9b2bc252ee55aba2c1c5c30	verified chain
+result	knot:7_5	improved	4	2	2	5ecd3c6df0e2081f693aaff2e0f9f46d3cb9d05d25b809db12c8fd744b5a86bb	verified chain
+result	knot:7_6	improved	4	1	1	7225f1586b1692df1117252a4fa9e205c1c65a5f10cc94127c3462ebfc955447	verified chain
+result	knot:7_7	improved	4	1	1	0d9dfaa8f13b22846b1d678d7b8a9361a3a82d8b7304d1d09c539824f3ba608b	verified chain
+result	knot:8_1	improved	9	1	1	31e55184ce135640fff35c7c64010f09be8d0d419da6dbf959256727f48d54c7	verified chain
+result	knot:8_2	improved	3	2	2	5ef42267772bb7b72f9bd245d35772418ab6dec5556b86e6c154bc62f7859e06	verified chain
+result	knot:8_3	improved	11	2	2	fbb38df538f91d4405cf8e967014d8f065ecc49a291e835e9e774bfa5fb69eab	verified chain
+result	knot:8_4	improved	6	2	2	1530bb38d1783f3a3b7b676488c6e73a4d911ece4911e68e4b6411b4853cde7d	verified chain
+result	knot:8_5	improved	3	2	2	32d79d242e3939f46445f81a53b238675ced4620305e3d51e51d671e6f1b6475	verified chain
+result	knot:8_6	improved	6	2	2	1161b1707208c65cd7c347d22db105f032efc5dbf20c02b4b5ec99263b247533	verified chain
+result	knot:8_7	improved	4	1	1	86c8178217a40a3af12ac7624271422f60ccc33465bd9dc6c9661c032b09c710	verified chain
+result	knot:8_8	improved	5	2	2	325ba808b77c9f4ee99d91f3504ac90d1969c3e9658b6585711148a878248668	verified chain
+result	knot:8_9	already-sufficient	1	1	1	-	graph bound is already no larger than witness cost
+result	knot:8_10	improved	4	2	2	9af68e270241b06b753b2fe24061dea71fb7fb1b9636ea704231a78f24495225	verified chain
+result	knot:8_11	improved	8	1	1	9907c97c66abbbeea1c53f52e730948072a368eed5c9b11afcff5d576f74b4e6	verified chain
+result	knot:8_12	improved	6	2	2	f923a5d906d4deadd8db69ff3ce840664b8e31f928403d12f9e16837ade6153e	verified chain
+result	knot:8_13	improved	7	1	1	6a280193933a87f150e17167d55a4e3c3ed201eb1c9fd0e36a872ccd0662c64c	verified chain
+result	knot:8_14	improved	4	1	1	61c9e454c48ff23308968f367bb645c2b2ac695866e5817c23151e1385418b8a	verified chain
+result	knot:8_15	improved	8	2	2	a965278a88781e4aca2b51b61bc914d5f67c382c523079c6e0d16959ccd7785e	verified chain
+result	knot:8_16	already-sufficient	2	2	2	-	graph bound is already no larger than witness cost
+result	knot:8_17	already-sufficient	1	1	1	-	graph bound is already no larger than witness cost
+result	knot:8_18	already-sufficient	2	2	2	-	graph bound is already no larger than witness cost
+result	knot:8_19	absent-source	-	-	0	-	standard normalized key is not in graph
+result	knot:8_20	already-sufficient	1	1	1	-	graph bound is already no larger than witness cost
+result	knot:8_21	already-sufficient	1	1	1	-	graph bound is already no larger than witness cost
+result	knot:9_1	already-sufficient	4	4	4	-	graph bound is already no larger than witness cost
+result	knot:9_2	improved	15	1	1	40fb9c9c4b031ef1673965a4660acdbab35d2de8b8019099957450e215934709	verified chain
+result	knot:9_3	improved	5	3	3	87357c0f367870546808c2be2408be9b45fdd394067fc48faef4c307528832f0	verified chain
+result	knot:9_4	improved	10	2	2	87aebc7f81e3ba7a10e875b5174429d83f5871ff4d3461a7ebcf92a653093652	verified chain
+result	knot:9_5	improved	13	2	2	b2df7002994767a7eccf4680bcab44916bdbbc7c8f48ec4606babc21ded0f9a9	verified chain
+result	knot:9_6	improved	5	3	3	6a97b7dbe19db8190549624198be3c30b5814ca0a11da2b1eb520c79998b4544	verified chain
+result	knot:9_7	improved	10	2	2	13729b74bed094ffbfe06235fc6eb67f4c9b726d8b8105459a4951de8a60b8ce	verified chain
+result	knot:9_8	improved	7	2	2	d525f8a809550319a50f8ce61f27f629939d1029809ff1a1f0ba929114d21acc	verified chain
+result	knot:9_9	improved	5	3	3	6ac14a1e41bb6cddb31111e39fdb6bc6d3c41ae52e37a67a484f81f07aa7c25d	verified chain
+result	knot:9_10	improved	10	3	3	b1b1d0265726b225c177cc3f15c07f57c2e3bf55fe6948c285681a309dd0330c	verified chain
+result	knot:9_11	improved	5	2	2	7709b63c1c6de91693613897d85c85afbbd775b9b167dcc0cc4ac0c01af57b98	verified chain
+result	knot:9_12	improved	8	1	1	21010871869bddf868c3204a0d94244e6b8be3300dc246b4f1250face77f5df1	verified chain
+result	knot:9_13	improved	8	3	3	87848e09a060ee797c152a2261344820ec1ce3a55af61e57f42a0c56f5a88eb9	verified chain
+result	knot:9_14	improved	7	1	1	721cdc52a2e48314c9f632c97046134e8cef1c9b211397ac0d8d69fd7329bd2b	verified chain
+result	knot:9_15	improved	8	2	2	19d2ce430e891d675b3acb77bf5eb5164db4b9db78916d5a86d63ed4320dc413	verified chain
+result	knot:9_16	improved	5	3	3	e072b04aaa4f97e6af6ce876a427dbf6f562488c297de02ef117cd6fb4f66b79	verified chain
+result	knot:9_17	improved	6	2	2	56a8053dbeabfed3f98eb6a2a8a829b5023e76c3d58ad0057c92929cd312b5d6	verified chain
+result	knot:9_18	improved	12	2	2	faa69d211584005edac821c4b6864ba1eab83ca691692ac228e6241de4c83aa2	verified chain
+result	knot:9_19	already-sufficient	1	1	1	-	graph bound is already no larger than witness cost
+result	knot:9_20	improved	6	2	2	725c027da73b46f5c2e9c9cde6c4fb36b371c533fc8158cf3c1b7530cfbbed19	verified chain
+result	knot:9_21	already-sufficient	1	1	1	-	graph bound is already no larger than witness cost
+result	knot:9_22	improved	6	1	1	14897360af6e46dac311390e6f9fa622c84d533d32e510cb5018e1185c2dbe5c	verified chain
+result	knot:9_23	improved	10	2	2	aead7dd7a7d2a6f6362632e49082c9b5e06a6c45030241050f80ed36aaf22888	verified chain
+result	knot:9_24	improved	3	1	1	f1ca1617376919ab22f471ee8372ffee3324fe7dbcd83a7d2e90072171ad5750	verified chain
+result	knot:9_25	improved	10	2	2	58bd4c2feef4c9f3afa23c2b1014ea4857449d23addf5e52a054474e6a94a612	verified chain
+result	knot:9_26	improved	4	1	1	03b8df3ff734ad43200eaba39db18dd6d0c25d2fa80604196ba9ea865ff3d120	verified chain
+result	knot:9_27	improved	6	1	1	1c481bdab3139f23e0b98f5d507356e44eb0207e015e2764d8381295b9956171	verified chain
+result	knot:9_28	improved	4	1	1	49f95c5e711948ff60d0bedd0190d56a4b06fd677548f72fd75b918a22f1d6a6	verified chain
+result	knot:9_29	improved	4	2	2	f05f433b6da29f34e00567cc5490c12b5bf99f6f2a4d6e0e97b0461e50f7b4ea	verified chain
+result	knot:9_30	improved	5	1	1	2826cdf042b43376b3f334a4931f46736307d7826f49dd46e3ba791d17e34e8d	verified chain
+result	knot:9_31	improved	4	2	2	17f54109312cccf65dbe17566dea807e486de3c714d54deed73b442e5a837168	verified chain
+result	knot:9_32	improved	4	2	2	508beb06df39bdd2c74ec45d3f86f232f96aea3ea7b04f672d46a80ae1ab8318	verified chain
+result	knot:9_33	improved	6	1	1	4add40a8702b230506e1735c36171cd9cf397b899257c86050ca0de116ecd985	verified chain
+result	knot:9_34	improved	3	1	1	f6f6da389f28ddb5a69a50663d4eccc1882db32f4327f173f5357c8575515062	verified chain
+result	knot:9_35	improved	15	3	3	a4799d546a4d7979ef770fa7a387c4993dc2034abb10247a3e554c7616d810af	verified chain
+result	knot:9_36	improved	5	2	2	7222e9380c1ace74f02abd5e0889d80d7bd4edfb74941874ed805f67e41aec32	verified chain
+result	knot:9_37	improved	11	2	2	33c4998e6b360bec16ac7ea40467fba2a3c52b0a9d4ed77e40e5b8f83b5665fc	verified chain
+result	knot:9_38	improved	6	3	3	e0c3403550a28ecf8da9e0cb6e4f26f432375626e66e8e935f037e255f84f317	verified chain
+result	knot:9_39	improved	6	1	1	c747cc5165c4a99e1ea236a1e6b34e905a8c56049e670a69fea23f17dc9e8214	verified chain
+result	knot:9_40	improved	4	2	2	bc49d3dc2da1c3913eaa2f505482737e7d454e439c9cdb284eb6e0d5dcfd83a4	verified chain
+result	knot:9_41	improved	11	2	2	5592aa3d64cbdff26d7a67b943b8296821694724c927950252d5825fff8e0fee	verified chain
+result	knot:9_42	improved	5	1	1	2625f1fd3538b894fd922cbfcd3962c5e84c5de7b00a4dfc3f47110eaedc1f49	verified chain
+result	knot:9_43	improved	3	2	2	a7c452519a00e007b863aedb965c262f7784e11cd81d074fdd9c050114d178de	verified chain
+result	knot:9_44	improved	2	1	1	4c39e9871a7f7619d73dab454c94d93d442f794e0eac0ef569a7c4b0277284c8	verified chain
+result	knot:9_45	improved	5	1	1	7258944602f8895d3af8bb2d191802edbb638c22c8a99482df00ab3aaedbf18d	verified chain
+result	knot:9_46	improved	16	2	2	63a059f46b7e09dbc1d04d521f4ae37d85775ed48aea097927bf2867024c381f	verified chain
+result	knot:9_47	improved	6	2	2	511db2f9b7d465a6c026e1e765464df2866eca03c9d597f08fc66902d9154e7c	verified chain
+result	knot:9_48	improved	6	2	2	76e3b31a7efd006ef5fbadb5537ebbc43794d06e0a9d796b6b33a44b1f06c758	verified chain
+result	knot:9_49	improved	4	3	3	4ea6fd28deb5daec5a587486247ed9a42d11c49451d5f490fae2750b048a949b	verified chain
+corpus	outputs/unknotdb-catalogue-reidemeister-c10-exact-v1.json	70bc3c76816ec9f8a90343e835d24ca1c5cdd6d7104993eb068bbe68edcaac10	155
+result	knot:10_1	absent-source	-	-	0	-	standard normalized key is not in graph
+result	knot:10_2	improved	6	3	3	8b358b64f679a0d807611032e170298072805d828817608785d7eaadf4060185	verified chain
+result	knot:10_3	absent-source	-	-	0	-	standard normalized key is not in graph
+result	knot:10_4	improved	10	2	2	07187829dfd9341f4f77887730d461572e096f995b36dc5869ade509ca75352a	verified chain
+result	knot:10_5	improved	5	2	2	bf72bf3f29c40e27da9538e82991877d3ddeb7e8542af77bd0a4c2e924d46163	verified chain
+result	knot:10_7	improved	16	1	1	0f824cd1c630eb37f253d2506a504bc4e9e18b8b1b8c56a112616ad351245fd9	verified chain
+result	knot:10_8	improved	5	2	2	c9beada1df3adfea39698dc5ff069afe4a84738b4514356152b34a12d2efefb2	verified chain
+result	knot:10_9	improved	3	1	1	4f68cb7e4509a96dddc2a9915ba87fb6b4ec319c8b1ce8bd82cddab9723c5b8c	verified chain
+result	knot:10_10	improved	13	1	1	a9cc8cbd827c1655a8def2938b10f55a9ab1ad5a4db287094d67c1c1b158cfd1	verified chain
+result	knot:10_12	improved	6	2	2	18419b2244120fc2243d17aaec3e2678d10ae9b87349978c40e772bcd2e0c475	verified chain
+result	knot:10_13	improved	10	2	2	dd2b4ae9b74875b6559be3f881b74051253ba51ef1e89be7ee466bd88d2151c0	verified chain
+result	knot:10_14	improved	5	2	2	c41f5ceddf4fd3633f7b7ae3ec787663646df088f369fef137f237a4c419a4a4	verified chain
+result	knot:10_15	improved	6	2	2	930e9a275b75020b22e1f06b5134baa5641d72eb7900d4789f44cf2b317d5471	verified chain
+result	knot:10_16	improved	10	2	2	dbade4568916a1649f97ed0f764a63340667376e5236dd8487fc3e3b20428376	verified chain
+result	knot:10_17	improved	5	1	1	36f6ae6faf86f400aa0ea24ae4a26b3c5b5ec6ee6fa423e60862269bbcb9cf58	verified chain
+result	knot:10_18	improved	18	1	1	2aeb3a03f88d2b1cceabdcb6d1d32656222429b421e3e1b8d0e1e63d17b979f5	verified chain
+result	knot:10_19	improved	6	2	2	2de2e59ec5d9e693379a763194e5f453b5d92cce670913a1d4f0fe58f9be3a78	verified chain
+result	knot:10_20	improved	14	2	2	4ad55da62ab53f6bbd6cb162365a2730e14e8167f509446784dcce55180a6822	verified chain
+result	knot:10_21	improved	7	2	2	c4a430e5f5d83c0d917395eba7a6d4289da3243c6c5998876b1bab94885edb7b	verified chain
+result	knot:10_22	improved	7	2	2	ed7ca00aa5b149b6d902f2b9cdb6f824255384b92ec62071c3351310d7d0cd7e	verified chain
+result	knot:10_23	improved	6	1	1	1300a914c9ce6686e88acf74edecfe8e5e37485154517dd3a2936c5c7748a08e	verified chain
+result	knot:10_24	improved	14	2	2	4f7d196db606f6648fc9a892ae041c43afe137e6d0f7a1179d7f2d2d7536c228	verified chain
+result	knot:10_25	improved	7	2	2	1c98c1c3ff3e7f6fe8f290de8b8ac0243cc74a7dd74fcfb9ee1a649b6594a89e	verified chain
+result	knot:10_26	improved	7	1	1	77833779083c43642b147818e5060bfd4d86a98d5266d1a525017fb2991907da	verified chain
+result	knot:10_28	improved	13	2	2	192a4efaf2addc5e2dc3d022d321cfdc847ede385d572b8a4ba5c9e98adfa376	verified chain
+result	knot:10_29	improved	7	2	2	c6d0dc3f8f522a86fe3eba99ecc7950152f1c4b73e68fb1894bcc7443ac5fdfc	verified chain
+result	knot:10_30	improved	14	1	1	448e2f6b7947221fd56de2e0330c0b669484371b48793ba7004a5e8afb3c933a	verified chain
+result	knot:10_31	improved	11	1	1	ceeefb5b6cfccc3192117f24f63d8a4f2e20ccdb69ef35a55ecfed77926d0850	verified chain
+result	knot:10_32	improved	7	1	1	67986b7cc62dfa00e795e163be903c7215ab16a2594af7de7debf46618b4976b	verified chain
+result	knot:10_33	improved	13	1	1	a6c17195d32b6c051a85b1c05953fd473cc4aa9c7709bd9374f71aac659641e1	verified chain
+result	knot:10_34	improved	11	2	2	60f738664c702c6ce47845b226b4c40f41929583fa424a58867f3e642c7e9b34	verified chain
+result	knot:10_35	improved	10	2	2	e69821990b1aaa754f4c610c45a13bab2f91711a9aaf0ce808c9964ee58a9786	verified chain
+result	knot:10_36	improved	16	2	2	df4361bc547f2b820b26a2ca2bd866d48fdd7be1b42aeca03a4082a5f0bcaa32	verified chain
+result	knot:10_37	improved	13	2	2	d6364bebc8a664fb4c62c01caea86670e76a8577f9b04565565a869afe95799f	verified chain
+result	knot:10_38	improved	14	2	2	f978ed2e6596fc9933ecf30b0dcabe637c9c1c55aaaae8cccc98a62224bac883	verified chain
+result	knot:10_39	improved	7	2	2	067f7dea80c18912856ebc8158b75b06ecdaef51133e415b19ba159ad1400f4a	verified chain
+result	knot:10_40	improved	8	2	2	3ccb9ad82ff912945ed1f29d9c9c0d01bdf976a694651854a306e6d253939c48	verified chain
+result	knot:10_41	improved	5	2	2	1e69f0e62ac7da717918d4b4bcaf9a8b69267373ddd74943079c4c955d526a57	verified chain
+result	knot:10_42	improved	6	1	1	bd3463970cd11c34824ba192a5ef561b009ff69f15866cd7cbe29810b0adc07d	verified chain
+result	knot:10_43	improved	6	2	2	ccd10d407e571fc92517bb51c9440d516890446ebddef2496f1e9cf89dd51a12	verified chain
+result	knot:10_44	improved	7	1	1	d72d7c24da5327304220c1ce063f8b5220017c2cc166e963ac4f46f59e3965f8	verified chain
+result	knot:10_45	improved	8	2	2	b2aace15b91c27358b1fc260ed86cc2269f073b9ef84a73d4992201744cc84f6	verified chain
+result	knot:10_46	improved	6	3	3	25e6ba2bc5300766ff1e2655eb370a78ebfdcd184b72a99cca0047aab64b5815	verified chain
+result	knot:10_48	already-sufficient	2	2	2	-	graph bound is already no larger than witness cost
+result	knot:10_49	improved	7	3	3	be100b35b70726808ee7cb9ffb0f4066f0c7acdcaffa04a4658ca6f63064422f	verified chain
+result	knot:10_50	improved	9	2	2	4a173934a271312c46e0dca239bd6cd5d5d8bf040b4b5dc36854882437f50925	verified chain
+result	knot:10_52	improved	8	2	2	6d763bd18ef61cfc9b677515ccd60905db02f48f00d2bfef7894bde738ed67da	verified chain
+result	knot:10_53	improved	16	3	3	8445a4d33069cb7e38ed1046daf6a067031daa52dbd5fa672c1fd12ccb8af26c	verified chain
+result	knot:10_55	improved	12	2	2	63ed82496255f3dfe29b293d534c22225c8fbb06990bf67a9ede1da2d10faa9c	verified chain
+result	knot:10_56	improved	7	2	2	ae292ce014605ac592afef7e994fcbb646491478fc3af590fe5d1dd79da1b9df	verified chain
+result	knot:10_57	improved	6	2	2	7ce59db17f037229f1c61a08ac1b9cd2a518249c1da5dde6ca303c8e9fd1b5ea	verified chain
+result	knot:10_58	improved	10	2	2	05619dc3b51a4b25a51f63016b62b39fd1717601113b3d1a180f176b7a8a1de6	verified chain
+result	knot:10_59	improved	5	1	1	5b4f49add26f5ee408be71989a9881836a78f34c33290734424a9cbe204535bb	verified chain
+result	knot:10_60	improved	11	1	1	bbabc0600a116d08d2ae456c1ad5fe19c9401fbb684c1ab0f55bb26dfc93c838	verified chain
+result	knot:10_62	improved	4	2	2	294505fe7514675c8db833e90b51e0eabb896e0951477b6213a476b1c917c784	verified chain
+result	knot:10_63	improved	14	2	2	23e7a5c8bb1dcf1ea0ec0ae3627b3734b2eb58c5bb3fc1d8490d9f93cefffa60	verified chain
+result	knot:10_64	already-sufficient	2	2	2	-	graph bound is already no larger than witness cost
+result	knot:10_65	improved	8	2	2	e0400718a9d78afa5ebe8ea66108f96720d93246da9450f598fa28224ed373c2	verified chain
+result	knot:10_66	improved	7	3	3	538e70a19dd7ee6f2f1d14496cf7e63cf5317dd863fabb4095c47e78e9e29941	verified chain
+result	knot:10_67	improved	10	2	2	70c59f46671063cc473ca674aaa5e8eb5bb83c3738bb6386dd4fd8e6f915d7d2	verified chain
+result	knot:10_68	improved	13	2	2	f72ef0ce7a05144c501fe431fb3018d93b17c763e623f22e80f3ac8b53dc53bd	verified chain
+result	knot:10_69	improved	6	2	2	0ebbcec6e1f44b91ad0c19a087c017f8ec2a3d3db7a7b47497af8cbf99fabb30	verified chain
+result	knot:10_70	improved	7	2	2	d3f3c78c5dcea05c17d53626e22b3f62d99333b3590e9c1e297f5896e884dcfa	verified chain
+result	knot:10_71	improved	6	1	1	366233918047e640a323a81fb546806e7069335dde93b4c5649648fae97f21ed	verified chain
+result	knot:10_72	improved	11	2	2	c9f3eb661c2c233a371377e7214c391ff02e7d4423d0f9974f3b91b611e18d63	verified chain
+result	knot:10_73	improved	6	1	1	a7dcfc51000eb56508bda08b80a5227fd7343db8fe0c9dd60ca0d6bc1ee2a133	verified chain
+result	knot:10_74	improved	10	2	2	2f97a86c917bbacd40f9c28ce75a7bb2fea11716bffc811a916dd07fead3802f	verified chain
+result	knot:10_75	improved	9	2	2	bb71d8dda8026f597f5a15ac015a360375b640a479f38c25dbf9a0d6ea2199d5	verified chain
+result	knot:10_78	improved	9	2	2	f5c576b9c46274fb652342bc3ce1bb336d33ae47d2a53f72a68d3a918c01eed2	verified chain
+result	knot:10_80	improved	5	3	3	d8eb4a8e59706ba3ab900ff35ab5ff9dcc9a891b6691d1d1d24b31c7136052c0	verified chain
+result	knot:10_81	improved	6	2	2	a57c3ade32a947f0e990f066a6914017b9f0a35b27311c9628b8721be2921121	verified chain
+result	knot:10_82	improved	4	1	1	9ab5153372edf396507a4a3deb3fdb5035cfecef8c685d3385f7fb04df7e1691	verified chain
+result	knot:10_83	improved	7	2	2	ebb1358e4ed354623ee8b75cd1521749cca2ffcc0043f551ab7760e1914e3c9b	verified chain
+result	knot:10_84	improved	8	1	1	75ef996a260e0b07b8d769677a1a2b2bb45f267658360c88bfd7ce6f253379ad	verified chain
+result	knot:10_85	improved	3	2	2	f6f6d4924d66e764c468dd4a15fbdde20b9092729a0134c051a6fcbb3c0d7751	verified chain
+result	knot:10_86	improved	8	2	2	27c2b1715529ca6bbc476cb78517cca0804e6f8223a9058af6b54399b92a265a	verified chain
+result	knot:10_87	improved	9	2	2	7d8be08440e9c863a224da0a09f1270d1aa042b442920ca11777cc65c163f322	verified chain
+result	knot:10_88	improved	8	1	1	3273a721fc3f7d2842bdccc0d4caf59a70ec3fd8c00935566c3fa277601fb6fe	verified chain
+result	knot:10_89	improved	4	2	2	c9253597c03be700f8fc7c0309a6639177d7adfb50a681cbb41b9ca150161123	verified chain
+result	knot:10_90	improved	7	2	2	c55e94a986532ca5cabb2f687d5cf788a685db91cf1f1d8185026f889d61e2e2	verified chain
+result	knot:10_91	improved	3	1	1	34418aedaad4ab4ebf2c26cfa91b6c1a768471125d46884fbf43b878326332af	verified chain
+result	knot:10_92	improved	7	2	2	327ceb0bf510983d41a8670241e107695d8f27b27a8304121fa4df1acd150ee5	verified chain
+result	knot:10_93	improved	8	2	2	dd3a2f21d7f538b0cf5e90e116a6ce19fa86641780bdb2ea27206f09d367ef33	verified chain
+result	knot:10_94	already-sufficient	2	2	2	-	graph bound is already no larger than witness cost
+result	knot:10_95	improved	8	1	1	c6a43295cfacf5ec968739fed42d4e5a5f017249097da6f52961834446a25691	verified chain
+result	knot:10_96	improved	5	2	2	7ed90e42042a011542b91f2a34de24977d5de35e36f0de29e9911d2afaca5c2e	verified chain
+result	knot:10_97	improved	12	2	2	9c6d3c793885225e398ab9e04b2ade205782e10d5f874678c83ceb1d45331958	verified chain
+result	knot:10_98	improved	5	2	2	69f92fcd863e4b6b56c8aa545ee95823fae06dcfee93bb448f83b2a183ca1519	verified chain
+result	knot:10_99	improved	3	2	2	d4265a71f59a38757e0586e91167e5ae042e191f384d693bf5b5f8b1decfb715	verified chain
+result	knot:10_101	improved	12	3	3	7cbd4254d0fba6002a2108c353e91d1a85a60a46d09faed5395d00f3de9f4550	verified chain
+result	knot:10_102	improved	7	1	1	0acf3d8e93ad763d4da71e299b8d8ec3b8820b479baf7c753e3f0af59aab44f8	verified chain
+result	knot:10_103	improved	6	3	3	9649ea74403926354c14b3d206f1112560df53c08d36a2acf081eb886073c055	verified chain
+result	knot:10_104	improved	3	1	1	cd83fc9afa69a7bda8a2a52764cab1b98ec9172ccf04e70e9917806f0f150727	verified chain
+result	knot:10_105	improved	5	2	2	d88467df019ae25d7c77e99781a4244e5eac861d3a498dcf21da2eb0c6203e4c	verified chain
+result	knot:10_106	already-sufficient	2	2	2	-	graph bound is already no larger than witness cost
+result	knot:10_107	improved	6	1	1	a45c34205ba8986a4b98889c5f89cbee0901e8b02265357246adaf8f700a7380	verified chain
+result	knot:10_108	improved	8	2	2	a11a8970dc6bddbd7243d963d33a2c0fc7e4df8de1bc650afbb2eb392fce71af	verified chain
+result	knot:10_109	already-sufficient	2	2	2	-	graph bound is already no larger than witness cost
+result	knot:10_110	improved	7	2	2	d34bb6c5c7a0f3bafcbd08962554c7697b5c0cd178fe2722eb41f6a7e4b859ab	verified chain
+result	knot:10_111	improved	7	2	2	e1cd002bdcb5f52cb49f24e8d2e43d6687c9db43e31fe2b90680565c098690b6	verified chain
+result	knot:10_112	improved	3	2	2	94af2b98ef5289986ca87bd0f06b0f9ed06b52bec0e201c1d3b663db32625778	verified chain
+result	knot:10_113	improved	8	1	1	d27acd02f7c49d3fff885ed9d6f777a2837a5a3bfb2346d58f30796986c3c1a4	verified chain
+result	knot:10_114	improved	9	1	1	301d1f61a406677f42bc085ce68e4d474e63d4cf38572051c7220e2bc3b52272	verified chain
+result	knot:10_115	improved	6	2	2	fa77191a9b611f75cca32efc770b903f1030ea3a33431fdc10f7db5659bd4655	verified chain
+result	knot:10_116	improved	6	2	2	c5383a2aa2788f860939068e1f78a42ecb2617a04074456acbfe8aa83fc9d64e	verified chain
+result	knot:10_117	improved	6	2	2	90964ee5e4dfedca60426a62b772ca71ae181148e0aafc3d7b09e4aa32493cab	verified chain
+result	knot:10_118	improved	3	1	1	73eeedcab6c82c6e57f4c60dd4716bb722f5d38e2e7cfb341b6c61956a253d45	verified chain
+result	knot:10_119	improved	7	1	1	fe7b56a61998d8653be6ab50d90a8f2592996f76b4d5548505831d796cc8b2c6	verified chain
+result	knot:10_120	improved	14	3	3	75c185e94a704d52e7c4f12c26197ad966c00e0fdfe25a816f495d7797a2e19c	verified chain
+result	knot:10_121	improved	6	2	2	20b709866c9e718fd049c83787016ec4b8c16927e6141bef7e9d2dfb7206f7a2	verified chain
+result	knot:10_122	improved	5	2	2	539614c8238b607f85971c8279aa8d92b9189db2de1466e5c3e931419fb5ad23	verified chain
+result	knot:10_123	improved	3	2	2	bde70301b0ca17d37adb3117efff2f775050047394976c541e60e9496dd2294c	verified chain
+result	knot:10_124	already-sufficient	4	4	4	-	graph bound is already no larger than witness cost
+result	knot:10_125	improved	4	2	2	8fe59b77e68087a6830377142e934fb9cdadb873f21013d5fb0f44958b5ac992	verified chain
+result	knot:10_126	improved	5	2	2	96a7f3cab79d597216b582d88ea8e873eaedc314aaa2c714cfd4d7b729d046c7	verified chain
+result	knot:10_127	improved	7	2	2	112d9ed681f843140c38305a52333acca4dac9ec87c5a85e54b852852274f9ad	verified chain
+result	knot:10_128	improved	7	3	3	237728dbc5de939ea4a06be5851b2f586991de6b85e7eaa37f04a3875db27d35	verified chain
+result	knot:10_129	improved	8	1	1	785dfa243ed720e0022ead77e69dfd4ee8a5b035ed4a0712bfc0a66a9df08d2b	verified chain
+result	knot:10_130	improved	8	2	2	5d4c028470c155d42f4a9c484608b73401075c4bc172db9359895daa08e2e9dd	verified chain
+result	knot:10_131	improved	7	1	1	8ecc8a0e52b4057f650d807fab9882bab51851dfbaa7d4838792a6d0638564f1	verified chain
+result	knot:10_132	improved	6	1	1	89b332fa1b1e1b753c6c9bfeb27c9d328a9a86164bc6183d40c357d351de1b29	verified chain
+result	knot:10_133	improved	5	1	1	8e0d541f0237a600eb09c0c3ddb8075501540a746787eadb22727ec7a9320b03	verified chain
+result	knot:10_134	improved	7	3	3	ea342a9a5594285f97a9143e6a1db9bd371fa4eb499006c4eb826b0543763e6a	verified chain
+result	knot:10_135	improved	6	2	2	e83336e174dea84df3ed06e6d29395b4e81abb91d1198e70c7a00927f9fbefee	verified chain
+result	knot:10_136	improved	5	1	1	800503f7423c2ab3b866e156a4e5effcf8bc80b84b7e73ad18a0cf7dc9840d5e	verified chain
+result	knot:10_137	improved	9	1	1	16acec627c31aa6bc942920c081dabd1920458f8330b5095d23e7702b4a056ea	verified chain
+result	knot:10_138	improved	7	2	2	c44ecffc9d5734afafb578e1d619f5f86c410cd40257ef73265d5f0e5d86b357	verified chain
+result	knot:10_139	already-sufficient	4	4	4	-	graph bound is already no larger than witness cost
+result	knot:10_140	improved	8	2	2	04d0cde54c9b9163aff881edd78b96d9c0306b1bb05c2ab470b35bef39a82b4e	verified chain
+result	knot:10_141	improved	2	1	1	90de9aa8e774db25643f965ecfdd5e57a958455928f837edf5437609714e9cac	verified chain
+result	knot:10_142	improved	7	3	3	8ffd5ce37febe7c427f63580e82164752c62bb000dfac3f435776fa5ff3dc67b	verified chain
+result	knot:10_143	improved	5	1	1	6e3e27b84bd31e61b4e74706124f9989c1cbcc99e46e2f4c0ed106099a1a3757	verified chain
+result	knot:10_144	improved	16	2	2	1a73ab5c484d8b05a897dd82f709d63d8ade220ade178a9aca9e7b1ada00381a	verified chain
+result	knot:10_145	improved	4	2	2	7a73bf2ef2870f08ce7f75988de3a3cefe3924eca9a4e141aa0b3ff7c20faa4b	verified chain
+result	knot:10_146	improved	13	1	1	78c47d8a031c848fb216670d4f89cf6c49ef2d95e21f5473d1dc02927910445e	verified chain
+result	knot:10_147	improved	7	1	1	e8a95d5194582b115c9c1bd35376002013e7f10fcfb19bdaae9ae2330ac2fd13	verified chain
+result	knot:10_148	improved	5	2	2	6e9a87899ad72caac8f2a143f228396fd4f6177272f52c7031664c8bb72c801e	verified chain
+result	knot:10_149	improved	4	2	2	2592844d67a19dc6c43a007067b1b493fba08b4662b0f88e12baaeb070e32cd9	verified chain
+result	knot:10_150	improved	7	2	2	4da8011ea0638664bc7b160574801371d725ae9f8b5feac757060b055be8e466	verified chain
+result	knot:10_151	improved	6	2	2	8f389cebdabb9567bcc3fc181b6277a18513a7d1623894441343699a7549f411	verified chain
+result	knot:10_152	already-sufficient	4	4	4	-	graph bound is already no larger than witness cost
+result	knot:10_153	improved	6	2	2	6a9f081ed750555105c6d5488af55013b25585ae1961fc158665511617f45a8e	verified chain
+result	knot:10_154	improved	5	3	3	e0e3447960d538b30319fdb7d202b2fd97a5f711e173b5c6885c88ed57c925c5	verified chain
+result	knot:10_155	already-sufficient	2	2	2	-	graph bound is already no larger than witness cost
+result	knot:10_156	improved	6	1	1	bd07542cd956249a44365e8954d8628de423978bf61d1ab30611bf21606f7541	verified chain
+result	knot:10_157	improved	6	2	2	2a691d6aaecbfaed95fdeaf591466dc18277263f4ea009ceb77a0ad47350745f	verified chain
+result	knot:10_158	improved	7	2	2	d34e4fb5a2f36234e9c495679955b0b89152ea29f6d75003f5b5cf027ec40797	verified chain
+result	knot:10_159	already-sufficient	1	1	1	-	graph bound is already no larger than witness cost
+result	knot:10_160	improved	7	2	2	f45eccd3a69e2e0abe801b6e34f87e9e3f524a57ad6382fcc2bd30991eb4fbc6	verified chain
+result	knot:10_161	improved	5	3	3	a5f17c8c9c907ec64969384015d3fccc3678ad89a1a6a0d3870e9c1af13f2cdc	verified chain
+result	knot:10_163	improved	7	2	2	590b037ec16ffd3dcf6966a1aeb5c127b9413483aed8a441e6c1a20d4061606b	verified chain
+result	knot:10_165	improved	6	2	2	e54d5623996bce4d4da18401951061d5f4a3b721bb5901f6a78977bc7e9c4c73	verified chain
+summary	corpus_entries	239
+summary	witness_entries	236
+summary	strict_candidates	208
+summary	improved	208
+summary	already_sufficient	25
+summary	absent_sources	3
+summary	failed	0
+summary	collateral_improvements	340
+summary	inserted_nodes	276
+summary	inserted_edges	559
+summary	inserted_certificates	205

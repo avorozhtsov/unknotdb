@@ -24,9 +24,13 @@ pub struct RfCorpusEntry {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RfCampaignLimits {
     pub max_priority: u8,
+    pub max_input_strands: u16,
+    pub max_input_word_length: u32,
     pub max_insert_attempts: usize,
+    pub skip_missing: usize,
     pub total_insert_simulations: u32,
     pub per_item_simulations: u32,
+    pub max_track_depth: u16,
     pub total_optimizer_simulations: u32,
     pub per_item_optimizer_simulations: u32,
     pub optimize_above_u: u32,
@@ -50,6 +54,7 @@ impl RfCampaignLimits {
 pub struct RfCampaignRun {
     pub corpus_rows: usize,
     pub selected_rows: usize,
+    pub capacity_excluded: usize,
     pub complete_preprocessing: usize,
     pub initially_covered: usize,
     pub initially_missing: usize,
@@ -127,10 +132,19 @@ pub fn run_rf_campaign<O: PolicyOracle>(
     if snapshot_id.is_empty() || corpus_id.is_empty() {
         return Err("RF campaign snapshot/corpus IDs must be non-empty".into());
     }
-    let selected: Vec<_> = corpus
+    let priority_selected: Vec<_> = corpus
         .iter()
         .filter(|entry| entry.priority <= limits.max_priority)
         .collect();
+    let selected: Vec<_> = priority_selected
+        .iter()
+        .copied()
+        .filter(|entry| {
+            entry.representation.strands <= limits.max_input_strands
+                && entry.representation.word.len() <= limits.max_input_word_length as usize
+        })
+        .collect();
+    let capacity_excluded = priority_selected.len() - selected.len();
     let inputs: Vec<_> = selected
         .iter()
         .map(|entry| entry.representation.clone())
@@ -141,12 +155,16 @@ pub fn run_rf_campaign<O: PolicyOracle>(
     let mut missing = Vec::new();
     let mut optimization_candidates = Vec::<(RepKey, u32, String)>::new();
     let mut manifest = format!(
-        "{RF_CAMPAIGN_MANIFEST_VERSION}\nsnapshot_id\t{snapshot_id}\ncorpus_id\t{corpus_id}\nmodel_id\t{}\nlimits\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
+        "{RF_CAMPAIGN_MANIFEST_VERSION}\nsnapshot_id\t{snapshot_id}\ncorpus_id\t{corpus_id}\nmodel_id\t{}\nlimits\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
         oracle.model_id(),
         limits.max_priority,
+        limits.max_input_strands,
+        limits.max_input_word_length,
         limits.max_insert_attempts,
+        limits.skip_missing,
         limits.total_insert_simulations,
         limits.per_item_simulations,
+        limits.max_track_depth,
         limits.total_optimizer_simulations,
         limits.per_item_optimizer_simulations,
         limits.optimize_above_u,
@@ -197,7 +215,11 @@ pub fn run_rf_campaign<O: PolicyOracle>(
     let mut insert_simulations = 0_u32;
     let mut policy_only_found = 0_usize;
     let mut graph_assisted_found = 0_usize;
-    for ordinal in missing.into_iter().take(limits.max_insert_attempts) {
+    for ordinal in missing
+        .into_iter()
+        .skip(limits.skip_missing)
+        .take(limits.max_insert_attempts)
+    {
         let remaining = limits
             .total_insert_simulations
             .saturating_sub(insert_simulations);
@@ -213,7 +235,7 @@ pub fn run_rf_campaign<O: PolicyOracle>(
             ConnectedInsertLimits {
                 max_simulations: item_budget,
                 max_search_states: item_budget,
-                max_track_depth: 12,
+                max_track_depth: limits.max_track_depth,
                 policy_limits: limits.policy_limits,
             },
             &entry.representation_id,
@@ -299,9 +321,10 @@ pub fn run_rf_campaign<O: PolicyOracle>(
     let inserted_nodes = graph.node_count() - parent_nodes;
     let inserted_edges = graph.edge_count() - parent_edges;
     manifest.push_str(&format!(
-        "summary\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
+        "summary\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
         corpus.len(),
         selected.len(),
+        capacity_excluded,
         complete_preprocessing,
         initially_covered,
         initially_missing,
@@ -321,6 +344,7 @@ pub fn run_rf_campaign<O: PolicyOracle>(
     Ok(RfCampaignRun {
         corpus_rows: corpus.len(),
         selected_rows: selected.len(),
+        capacity_excluded,
         complete_preprocessing,
         initially_covered,
         initially_missing,

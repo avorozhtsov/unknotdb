@@ -105,6 +105,68 @@ The production braid origin/key/action convention is normative in
 The mandatory initial-only reducer and normalization-only policy transitions are specified in
 [`schema/preprocessing-v0.md`](schema/preprocessing-v0.md).
 
+## Invariant lookup CLI
+
+The snapshot-pinned metadata sidecar is queried with `tools/unknotdb_cli.py`.
+It keeps knot invariants separate from representation-dependent features.
+
+```bash
+# Values stored for a named knot or a source representation.
+tools/unknotdb_cli.py invariants-for-knot 3_1
+tools/unknotdb_cli.py invariants-for-representation braid:7746cc...
+
+# Identification confidence is explicit. Candidate-only matches are never
+# returned as effective knot mappings.
+tools/unknotdb_cli.py identification-for-representation braid:7746cc...
+tools/unknotdb_cli.py list-identification-gaps --kind candidate
+tools/unknotdb_cli.py list-identification-gaps --kind unidentified
+
+# Reverse lookup. Repeated constraints are intersected through indexed postings.
+tools/unknotdb_cli.py find-knots-by-invariant \
+  --invariant determinant=3 --invariant signature=2
+tools/unknotdb_cli.py find-representations-by-invariant \
+  --invariant determinant=3 --feature braid_strands=2
+
+# Braid/conjugacy/policy fingerprints have explicit transformation domains.
+tools/unknotdb_cli.py fingerprints-for-representation braid:7746cc...
+tools/unknotdb_cli.py find-representations-by-fingerprint \
+  --fingerprint braid_strands=2 --fingerprint writhe=-3
+
+# Knot invariants and non-knot fingerprints can be intersected safely for search.
+tools/unknotdb_cli.py find-representations-by-invariant \
+  --invariant determinant=3 --fingerprint writhe=-3
+
+# Diagram-dependent features are queried explicitly, never as knot invariants.
+tools/unknotdb_cli.py find-representations-by-feature \
+  --feature word_length=3 --feature writhe=-3
+
+# Compute from an arbitrary braid using the pinned RF invariant implementation.
+/path/to/python tools/unknotdb_cli.py compute-braid-invariants \
+  --rf-src /path/to/rf-knots/src -- 2 -1,-1,-1
+```
+
+`knot_invariant`, `oriented-knot`, `rigorous_lower_bound`, and
+`representation_feature` are distinct scopes. Braid word length, strand count,
+writhe, policy state and learned fingerprints may be useful search features,
+but they are not allowed to reject a knot match unless a separately stated
+theorem makes the comparison safe.
+
+Representation identification has three physically separate tiers:
+`verified_representation_knot_map`, `attested_representation_knot_map`, and
+`representation_knot_candidates`. Only the first two feed
+`effective_representation_knot_map`; invariant-only candidates require new
+verified or attested evidence before promotion.
+
+The separate braid-fingerprint sidecar records `scope`, `valid_under`, and
+`safe_use` for every value. Its reverse postings support candidate generation
+and ranking; they are never interpreted as general knot invariants or proofs.
+
+Jones coverage is complete for the 3,401 named knots in the current maps. Wide
+source braids are handled by `tools/backfill_jones_pd.py`: it checks the exact
+Spherogram source-braid identity, then evaluates the equivalent minimal
+11--13-crossing PD diagram by an exact Kauffman state sum. This avoids the
+Temperley--Lieb/Catalan blow-up caused by computing directly on a wide braid.
+
 ## Naming
 
 `unknotdb` — free on PyPI, crates.io and npm, and unambiguous in search. The

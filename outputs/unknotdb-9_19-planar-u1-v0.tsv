@@ -1,0 +1,12 @@
+format	unknotdb-planar-u1-import-v0
+source_snapshot_sha256	767127197c81117d2ae2e95ffe9b2785b4436d798493f14cc11b0686ff6a3490
+source_key	bddc6eee2516012432d919b5719d4a3a105c0b8a1e9cbef9319237cb48ddd64f
+crossing_position	5
+successor_key	b9c647bab0db751f61e0a35880d3113e7e33a1c7ca8bbaef1b2713af64081e3c
+certificate_id	6ddb53a2367d9b5c7c6f092f83918fa4508896c39950122b0e16ad2c4f0b31c6
+old_u	13
+new_u	1
+inserted_nodes	1
+inserted_edges	2
+planar_outcome	Inserted { u_upper_bound: 0 }
+crossing_outcome	Improved { old: 13, new: 1 }

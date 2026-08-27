@@ -23,6 +23,7 @@ PROTOCOL = "UNKNOTDB_POLICY_V0"
 CONTROLLER_INITIAL_STATE = "canonical-clean-v0"
 REPRESENTATION_MAGIC = b"UKB0"
 OBJECTIVE_RATIO = 1000
+MAX_CONTROLLER_CYCLE_SKIPS = 16
 
 
 def sha256_file(path: Path) -> str:
@@ -139,10 +140,10 @@ def main() -> None:
         raise ValueError("frozen policy model ID does not match checkpoint SHA-256")
 
     sys.path.insert(0, str(args.pgx_root.resolve() / "src"))
-    import numpy  # type: ignore[import-not-found]
-    import torch  # type: ignore[import-not-found]
     import jax  # type: ignore[import-not-found]
     import jax.numpy as jnp  # type: ignore[import-not-found]
+    import numpy  # type: ignore[import-not-found]
+    import torch  # type: ignore[import-not-found]
     from pgx_mcts_bench.adaptive_scientists import (
         load_scientist,
     )
@@ -279,6 +280,13 @@ def main() -> None:
                 "transition": transition,
                 "seen": {controller_fingerprint(numpy, transition)},
                 "controller_plies": 0,
+                # v4 adapter rule: an internal action that returns to any
+                # controller state already seen on this clean-controller
+                # rollout is rejected at its source state.  We then take the
+                # next highest-logit legal action.  This is deterministic,
+                # bounded and never changes the frozen network.
+                "rejected_internal": {},
+                "controller_cycle_skips": 0,
             }
         profile["environment_init_ns"] = (
             profile["environment_state_ns"] + profile["serial_view_ns"]
@@ -329,11 +337,12 @@ def main() -> None:
                     masked = logits.masked_fill(~legal, floor)
                     for row, index in enumerate(chunk):
                         excluded = states[index]["excluded"]
-                        if not excluded:
-                            actions.append(int(masked[row].argmax().item()))
-                            continue
                         ranked = masked[row].argsort(descending=True).cpu().tolist()
                         transition = states[index]["transition"]
+                        fingerprint = controller_fingerprint(numpy, transition)
+                        rejected_internal = states[index]["rejected_internal"].get(
+                            fingerprint, frozenset()
+                        )
                         pgx_state = transition.state.pgx
                         length = int(
                             numpy.count_nonzero(numpy.asarray(pgx_state._word))
@@ -346,6 +355,8 @@ def main() -> None:
                                 int(candidate), int(transition.state.head), length
                             )
                             if underlying is None:
+                                if int(candidate) in rejected_internal:
+                                    continue
                                 selected = int(candidate)
                                 break
                             kind, position, generator, sign = game.spec.decode(underlying)
@@ -385,17 +396,24 @@ def main() -> None:
                     continue
 
                 phase_started = time.perf_counter_ns()
-                transition = scientist.game.step(transition.state, int(action))
+                next_transition = scientist.game.step(transition.state, int(action))
                 profile["controller_step_ns"] += time.perf_counter_ns() - phase_started
                 profile["controller_steps"] += 1
-                state["controller_plies"] += 1
-                state["transition"] = transition
-                fingerprint = controller_fingerprint(numpy, transition)
+                fingerprint = controller_fingerprint(numpy, next_transition)
                 if fingerprint in state["seen"]:
-                    responses[index] = (
-                        f"STOP_CONTROLLER_CYCLE {state['controller_plies']}"
+                    source_fingerprint = controller_fingerprint(numpy, transition)
+                    rejected = state["rejected_internal"].setdefault(
+                        source_fingerprint, set()
                     )
+                    rejected.add(int(action))
+                    state["controller_cycle_skips"] += 1
+                    if state["controller_cycle_skips"] >= MAX_CONTROLLER_CYCLE_SKIPS:
+                        responses[index] = (
+                            f"STOP_CONTROLLER_CYCLE {state['controller_plies']}"
+                        )
                 else:
+                    state["controller_plies"] += 1
+                    state["transition"] = next_transition
                     state["seen"].add(fingerprint)
 
         final = [response for response in responses if response is not None]

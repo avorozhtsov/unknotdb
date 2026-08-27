@@ -5,15 +5,16 @@
 //! evidence when a better route replaces the materialized pointer.
 
 use crate::representation::{
-    verify_edge_program, BraidRepresentation, CheckpointedProofProgram, ProofInstruction,
-    SemanticAction, VALIDATOR_VERSION,
+    verify_edge_program_with_certificate, BraidRepresentation, CheckpointedProofProgram,
+    ProofInstruction, SemanticAction, VALIDATOR_VERSION,
 };
 use crate::{
     EdgeRecord, GraphSnapshot, NodeId, NodeRecord, PolicyStopAttestation, RepKey, Result,
     RouteStep, SnapshotMeta, SqliteSnapshot, ROLE_CORE,
 };
+use rusqlite::OptionalExtension;
 use std::cmp::Reverse;
-use std::collections::{BinaryHeap, HashMap, HashSet};
+use std::collections::{BinaryHeap, HashMap, HashSet, VecDeque};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -37,6 +38,7 @@ struct KnowledgeEdge {
     first_action: u64,
     program: Vec<u8>,
     certificate_id: Option<RepKey>,
+    certificate: Option<Vec<u8>>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -118,9 +120,58 @@ struct RelaxationCase {
     target_key: RepKey,
     program: CheckpointedProofProgram,
     certificate_id: Option<RepKey>,
+    certificate: Option<Vec<u8>>,
 }
 
 impl PopulationGraph {
+    /// Re-attest a conservative policy-adapter migration without rerunning the
+    /// network. This is sound only when the new adapter differs exclusively in
+    /// behavior after a controller/representation cycle: every stored graph
+    /// node is already attested as terminal or as having reached a preferred
+    /// CC under the old adapter, so the new fallback branch is unreachable on
+    /// those exact clean-controller executions.
+    pub fn migrate_conservative_policy_adapter(
+        &mut self,
+        old_adapter: &str,
+        new_adapter: &str,
+    ) -> (usize, usize) {
+        let mut terminal = 0_usize;
+        let mut preferred_cc = 0_usize;
+        for node in self.nodes.values_mut() {
+            let (kind, action, old_audit) = match node.policy_stop {
+                PolicyStopAttestation::Terminal { audit_sha256 } => {
+                    terminal += 1;
+                    (b'T', None, audit_sha256)
+                }
+                PolicyStopAttestation::PreferredCrossingChange {
+                    action,
+                    audit_sha256,
+                } => {
+                    preferred_cc += 1;
+                    (b'C', Some(action), audit_sha256)
+                }
+            };
+            let mut material =
+                Vec::with_capacity(64 + old_adapter.len() + new_adapter.len() + old_audit.len());
+            material.extend_from_slice(b"UNKNOTDB_CONSERVATIVE_POLICY_ADAPTER_MIGRATION_V0\0");
+            material.push(kind);
+            material.extend_from_slice(&action.unwrap_or(0).to_le_bytes());
+            material.extend_from_slice(&old_audit);
+            material.extend_from_slice(old_adapter.as_bytes());
+            material.push(0);
+            material.extend_from_slice(new_adapter.as_bytes());
+            let audit_sha256 = unknotdb::util::sha256(&material);
+            node.policy_stop = match action {
+                Some(action) => PolicyStopAttestation::PreferredCrossingChange {
+                    action,
+                    audit_sha256,
+                },
+                None => PolicyStopAttestation::Terminal { audit_sha256 },
+            };
+        }
+        (terminal, preferred_cc)
+    }
+
     pub fn from_unknot(audit_sha256: RepKey) -> Result<Self> {
         let unknot = BraidRepresentation {
             strands: 1,
@@ -268,18 +319,26 @@ impl PopulationGraph {
         }
 
         let mut edges = Vec::with_capacity(hot.edge_count());
-        let legacy = conn.query_row(
-            "SELECT value FROM meta WHERE key='schema_version'",
-            [],
-            |row| row.get::<_, String>(0),
-        )? == "0";
+        let schema: u32 = conn
+            .query_row(
+                "SELECT value FROM meta WHERE key='schema_version'",
+                [],
+                |row| row.get::<_, String>(0),
+            )?
+            .parse()?;
+        let legacy = schema == 0;
         let edge_sql = if legacy {
             "SELECT edge_id, source_node, target_node, cc_cost, first_action, \
-                    program_version, program, certificate_id, validator_version \
+                    program_version, program, certificate_id, validator_version,0,0 \
              FROM edges ORDER BY edge_id"
+        } else if schema < 3 {
+            "SELECT e.edge_id, e.source_node, e.target_node, e.cc_cost, e.first_action, \
+                    p.program_version, p.program, e.certificate_id, '',0,0 \
+             FROM edges e JOIN programs p ON p.program_id=e.program_id ORDER BY e.edge_id"
         } else {
             "SELECT e.edge_id, e.source_node, e.target_node, e.cc_cost, e.first_action, \
-                    p.program_version, p.program, e.certificate_id \
+                    p.program_version, p.program, e.certificate_id, '', \
+                    e.program_anchor_x, e.program_anchor_y \
              FROM edges e JOIN programs p ON p.program_id=e.program_id ORDER BY e.edge_id"
         };
         let mut stmt = conn.prepare(edge_sql)?;
@@ -298,11 +357,24 @@ impl PopulationGraph {
                 } else {
                     meta.validator_version.clone()
                 },
+                row.get::<_, i64>(9)?,
+                row.get::<_, i64>(10)?,
             ))
         })?;
         for row in rows {
-            let (edge_id, source, target, cc, action, version, program, certificate, validator) =
-                row?;
+            let (
+                edge_id,
+                source,
+                target,
+                cc,
+                action,
+                version,
+                program,
+                certificate,
+                validator,
+                anchor_x,
+                anchor_y,
+            ) = row?;
             if nonnegative_usize(edge_id, "edge_id")? != edges.len() {
                 return Err("resumed population edge IDs are not dense".into());
             }
@@ -317,14 +389,67 @@ impl PopulationGraph {
             }
             let source = nonnegative_usize(source, "source_node")?;
             let target = nonnegative_usize(target, "target_node")?;
+            let source_key = *keys_by_node
+                .get(source)
+                .ok_or("resumed edge source is absent")?;
+            let program = if schema >= 3 {
+                let template = CheckpointedProofProgram::decode(&program)?;
+                if template.contains_planar_certificate() {
+                    if anchor_x != 0 || anchor_y != 0 {
+                        return Err("resumed planar program has a non-zero anchor".into());
+                    }
+                    template.encode()?
+                } else {
+                    crate::representation::AnchoredProofProgram {
+                        template,
+                        anchor_x: anchor_x
+                            .try_into()
+                            .map_err(|_| "resumed program anchor_x does not fit u16")?,
+                        anchor_y: anchor_y
+                            .try_into()
+                            .map_err(|_| "resumed program anchor_y does not fit u32")?,
+                    }
+                    .materialize(
+                        &nodes
+                            .get(&source_key)
+                            .ok_or("resumed edge source knowledge is absent")?
+                            .representation
+                            .representation,
+                    )?
+                    .encode()?
+                }
+            } else {
+                program
+            };
             let certificate_id = certificate
                 .as_deref()
                 .map(|blob| key_from_blob(blob, "certificate_id"))
                 .transpose()?;
+            let certificate = certificate_id
+                .map(|id| -> Result<Option<Vec<u8>>> {
+                    let exists = conn
+                        .query_row(
+                            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='planar_certificates'",
+                            [],
+                            |_| Ok(()),
+                        )
+                        .optional()?
+                        .is_some();
+                    if !exists {
+                        return Ok(None);
+                    }
+                    Ok(conn
+                        .query_row(
+                            "SELECT certificate FROM planar_certificates WHERE certificate_id=?1",
+                            [id.as_slice()],
+                            |row| row.get(0),
+                        )
+                        .optional()?)
+                })
+                .transpose()?
+                .flatten();
             edges.push(KnowledgeEdge {
-                source_key: *keys_by_node
-                    .get(source)
-                    .ok_or("resumed edge source is absent")?,
+                source_key,
                 target_key: *keys_by_node
                     .get(target)
                     .ok_or("resumed edge target is absent")?,
@@ -334,6 +459,7 @@ impl PopulationGraph {
                 first_action: nonnegative_u64(action, "edge first action")?,
                 program,
                 certificate_id,
+                certificate,
             });
         }
         for node in nodes.values() {
@@ -364,6 +490,14 @@ impl PopulationGraph {
 
     pub fn edge_count(&self) -> usize {
         self.edges.len()
+    }
+
+    pub fn planar_certificate_count(&self) -> usize {
+        self.edges
+            .iter()
+            .filter_map(|edge| edge.certificate_id)
+            .collect::<std::collections::HashSet<_>>()
+            .len()
     }
 
     /// Measure proof replay, full ACS10 refresh, and true monotone insertions
@@ -411,6 +545,7 @@ impl PopulationGraph {
                 target_key: edge.target_key,
                 program: CheckpointedProofProgram::decode(&edge.program)?,
                 certificate_id: edge.certificate_id,
+                certificate: edge.certificate.clone(),
             });
         }
         cases.sort_by_key(|case| (case.route_rank, case.source.key));
@@ -418,12 +553,14 @@ impl PopulationGraph {
         let duplicate_started = Instant::now();
         for _ in 0..duplicate_rounds {
             for case in &cases {
-                let outcome = graph.relax_unknot_edge(
+                let outcome = graph.relax_unknot_edge_impl(
                     case.source.clone(),
                     case.source_stop,
                     case.target_key,
                     case.program.clone(),
                     case.certificate_id,
+                    case.certificate.clone(),
+                    true,
                 )?;
                 if !matches!(outcome, RelaxationOutcome::Unchanged { .. }) {
                     return Err("duplicate population relaxation changed the graph".into());
@@ -445,12 +582,14 @@ impl PopulationGraph {
         for _ in 0..rebuild_rounds {
             let mut rebuilt = Self::from_unknot(terminal_audit)?;
             for case in &cases {
-                let outcome = rebuilt.relax_unknot_edge(
+                let outcome = rebuilt.relax_unknot_edge_impl(
                     case.source.clone(),
                     case.source_stop,
                     case.target_key,
                     case.program.clone(),
                     case.certificate_id,
+                    case.certificate.clone(),
+                    true,
                 )?;
                 if !matches!(outcome, RelaxationOutcome::Inserted { .. }) {
                     return Err("population rebuild relaxation did not insert its source".into());
@@ -466,12 +605,14 @@ impl PopulationGraph {
         for _ in 0..rebuild_rounds {
             let mut rebuilt = Self::from_unknot(terminal_audit)?;
             for case in &cases {
-                let outcome = rebuilt.relax_unknot_edge_deferred_acs10(
+                let outcome = rebuilt.relax_unknot_edge_impl(
                     case.source.clone(),
                     case.source_stop,
                     case.target_key,
                     case.program.clone(),
                     case.certificate_id,
+                    case.certificate.clone(),
+                    false,
                 )?;
                 if !matches!(outcome, RelaxationOutcome::Inserted { .. }) {
                     return Err("batched population relaxation did not insert its source".into());
@@ -687,6 +828,7 @@ impl PopulationGraph {
             target_key,
             program,
             certificate_id,
+            None,
             true,
         )
     }
@@ -708,10 +850,57 @@ impl PopulationGraph {
             target_key,
             program,
             certificate_id,
+            None,
             false,
         )
     }
 
+    pub fn relax_planar_certificate_edge(
+        &mut self,
+        source: crate::representation::NormalizedRepresentation,
+        source_stop: PolicyStopAttestation,
+        target_key: RepKey,
+        certificate: Vec<u8>,
+    ) -> Result<RelaxationOutcome> {
+        self.relax_unknot_edge_with_planar_certificate(
+            source,
+            source_stop,
+            target_key,
+            CheckpointedProofProgram {
+                instructions: vec![ProofInstruction::Action(
+                    SemanticAction::PlanarCertificateCollapse,
+                )],
+            },
+            certificate,
+            true,
+        )
+    }
+
+    pub fn relax_unknot_edge_with_planar_certificate(
+        &mut self,
+        source: crate::representation::NormalizedRepresentation,
+        source_stop: PolicyStopAttestation,
+        target_key: RepKey,
+        program: CheckpointedProofProgram,
+        certificate: Vec<u8>,
+        refresh_acs10: bool,
+    ) -> Result<RelaxationOutcome> {
+        if !program.contains_planar_certificate() {
+            return Err("planar sidecar program has no collapse instruction".into());
+        }
+        let certificate_id = unknotdb::util::sha256(&certificate);
+        self.relax_unknot_edge_impl(
+            source,
+            source_stop,
+            target_key,
+            program,
+            Some(certificate_id),
+            Some(certificate),
+            refresh_acs10,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
     fn relax_unknot_edge_impl(
         &mut self,
         source: crate::representation::NormalizedRepresentation,
@@ -719,6 +908,7 @@ impl PopulationGraph {
         target_key: RepKey,
         program: CheckpointedProofProgram,
         certificate_id: Option<RepKey>,
+        certificate: Option<Vec<u8>>,
         refresh_acs10: bool,
     ) -> Result<RelaxationOutcome> {
         if !source.representation.is_normalized()?
@@ -787,13 +977,14 @@ impl PopulationGraph {
                 return Ok(RelaxationOutcome::Unchanged { current, proposed });
             }
         }
-        verify_edge_program(
+        verify_edge_program_with_certificate(
             &source.encoded,
             &target_encoding,
             &program_bytes,
             CheckpointedProofProgram::VERSION,
             first_action,
             cc_cost,
+            certificate.as_deref(),
         )?;
         let edge_index = if let Some(edge_index) = existing_edge_index {
             edge_index
@@ -806,6 +997,7 @@ impl PopulationGraph {
                 first_action,
                 program: program_bytes,
                 certificate_id,
+                certificate,
             });
             self.edge_lookup
                 .entry(identity)
@@ -861,6 +1053,10 @@ impl PopulationGraph {
     /// fixed `(ACS10, rep_key)` order makes equal-ACS, one-CC choices acyclic.
     pub fn recompute_acs10_routes(&mut self) -> Result<Acs10Refresh> {
         self.recompute_unknot_routes()?;
+        self.recompute_acs10_routes_from_current_u()
+    }
+
+    fn recompute_acs10_routes_from_current_u(&mut self) -> Result<Acs10Refresh> {
         let acs10: HashMap<RepKey, u32> = self
             .nodes
             .iter()
@@ -935,10 +1131,99 @@ impl PopulationGraph {
         Ok(refresh)
     }
 
-    /// Recompute U independently from all immutable proof edges. Dijkstra runs
-    /// on the reverse graph from the canonical unknot; a selected route always
-    /// points to an already-finalized target, giving a strict cycle-safe rank
-    /// even for zero-CC edges.
+    /// Propagate only strict U improvements through reverse adjacency. This is
+    /// the low-latency insertion path; large batches still use the independent
+    /// full 0-1 BFS before publication. Equal-distance ties are deliberately
+    /// left to the full deterministic refresh, so an incremental update cannot
+    /// introduce a new zero-cost pointer cycle.
+    pub fn relax_unknot_incremental(&mut self, seed_keys: &[RepKey]) -> Result<UnknotRefresh> {
+        let before: HashMap<_, _> = self
+            .nodes
+            .iter()
+            .map(|(key, node)| (*key, (node.u_upper_bound, node.active_unknot_edge)))
+            .collect();
+        let mut incoming = HashMap::<RepKey, Vec<usize>>::new();
+        let mut outgoing = HashMap::<RepKey, Vec<usize>>::new();
+        for (index, edge) in self.edges.iter().enumerate() {
+            incoming.entry(edge.target_key).or_default().push(index);
+            outgoing.entry(edge.source_key).or_default().push(index);
+        }
+        for indices in incoming.values_mut().chain(outgoing.values_mut()) {
+            indices.sort_unstable();
+        }
+        let mut queue = VecDeque::new();
+        let mut queued = HashSet::new();
+        for &key in seed_keys {
+            let Some(node) = self.nodes.get(&key) else {
+                return Err("incremental U seed is not a graph node".into());
+            };
+            let current = node.u_upper_bound;
+            let best = outgoing
+                .get(&key)
+                .into_iter()
+                .flatten()
+                .filter_map(|index| {
+                    let edge = &self.edges[*index];
+                    let target = self.nodes.get(&edge.target_key)?;
+                    Some((target.u_upper_bound + u32::from(edge.cc_cost), *index))
+                })
+                .min_by_key(|(distance, index)| {
+                    let edge = &self.edges[*index];
+                    (*distance, edge.target_key, *index)
+                });
+            if let Some((distance, edge_index)) = best.filter(|(distance, _)| *distance < current) {
+                let target = self.edges[edge_index].target_key;
+                let rank = self.nodes[&target]
+                    .route_rank
+                    .checked_add(1)
+                    .ok_or("incremental U rank overflow")?;
+                let node = self.nodes.get_mut(&key).unwrap();
+                node.u_upper_bound = distance;
+                node.active_unknot_edge = Some(edge_index);
+                node.route_rank = rank;
+                queue.push_back(key);
+                queued.insert(key);
+            }
+        }
+        while let Some(target_key) = queue.pop_front() {
+            queued.remove(&target_key);
+            let target_u = self.nodes[&target_key].u_upper_bound;
+            let target_rank = self.nodes[&target_key].route_rank;
+            for &edge_index in incoming.get(&target_key).into_iter().flatten() {
+                let edge = &self.edges[edge_index];
+                let proposed = target_u
+                    .checked_add(u32::from(edge.cc_cost))
+                    .ok_or("incremental U overflow")?;
+                let source = self.nodes.get_mut(&edge.source_key).unwrap();
+                if proposed < source.u_upper_bound {
+                    source.u_upper_bound = proposed;
+                    source.active_unknot_edge = Some(edge_index);
+                    source.route_rank = target_rank
+                        .checked_add(1)
+                        .ok_or("incremental U rank overflow")?;
+                    if queued.insert(edge.source_key) {
+                        queue.push_back(edge.source_key);
+                    }
+                }
+            }
+        }
+        self.recompute_acs10_routes_from_current_u()?;
+        let mut refresh = UnknotRefresh {
+            reachable_nodes: self.nodes.len(),
+            ..UnknotRefresh::default()
+        };
+        for (key, node) in &self.nodes {
+            let (old_u, old_edge) = before[key];
+            refresh.changed_bounds += usize::from(old_u != node.u_upper_bound);
+            refresh.changed_routes += usize::from(old_edge != node.active_unknot_edge);
+        }
+        Ok(refresh)
+    }
+
+    /// Recompute U independently from all immutable proof edges. Distances use
+    /// 0-1 BFS on reverse adjacency. A second deterministic tight-edge pass
+    /// assigns pointers only toward already-ranked targets, preserving the
+    /// historical lexicographic tie rule and cycle-safe zero-cost ranks.
     pub fn recompute_unknot_routes(&mut self) -> Result<UnknotRefresh> {
         let root = self.unknot_key()?;
         let mut incoming = HashMap::<RepKey, Vec<usize>>::new();
@@ -953,54 +1238,73 @@ impl PopulationGraph {
         }
 
         let mut distances = HashMap::<RepKey, u32>::from([(root, 0)]);
+        let mut deque = VecDeque::from([root]);
+        while let Some(target_key) = deque.pop_front() {
+            let distance = distances[&target_key];
+            for &edge_index in incoming.get(&target_key).into_iter().flatten() {
+                let edge = &self.edges[edge_index];
+                let proposed = distance
+                    .checked_add(u32::from(edge.cc_cost))
+                    .ok_or("U distance overflow")?;
+                if distances
+                    .get(&edge.source_key)
+                    .is_none_or(|current| proposed < *current)
+                {
+                    distances.insert(edge.source_key, proposed);
+                    if edge.cc_cost == 0 {
+                        deque.push_front(edge.source_key);
+                    } else {
+                        deque.push_back(edge.source_key);
+                    }
+                }
+            }
+        }
+        if distances.len() != self.nodes.len() {
+            return Err(format!(
+                "verified graph has {} nodes unreachable from the unknot",
+                self.nodes.len() - distances.len()
+            )
+            .into());
+        }
+
         let mut selected = HashMap::<RepKey, usize>::new();
-        let mut finalized = HashSet::with_capacity(self.nodes.len());
-        let mut ranks = HashMap::<RepKey, u64>::with_capacity(self.nodes.len());
-        let mut queue = BinaryHeap::from([Reverse((0_u32, root))]);
-        while let Some(Reverse((distance, target_key))) = queue.pop() {
-            if distances.get(&target_key) != Some(&distance) || !finalized.insert(target_key) {
+        let mut ranked = HashSet::from([root]);
+        let mut ranks = HashMap::<RepKey, u64>::from([(root, 0)]);
+        let mut frontier = BinaryHeap::<Reverse<(u32, RepKey, RepKey, usize)>>::new();
+        let push_tight_incoming = |target_key: RepKey,
+                                   frontier: &mut BinaryHeap<
+            Reverse<(u32, RepKey, RepKey, usize)>,
+        >| {
+            for &edge_index in incoming.get(&target_key).into_iter().flatten() {
+                let edge = &self.edges[edge_index];
+                if distances[&edge.source_key] == distances[&target_key] + u32::from(edge.cc_cost) {
+                    frontier.push(Reverse((
+                        distances[&edge.source_key],
+                        edge.source_key,
+                        target_key,
+                        edge_index,
+                    )));
+                }
+            }
+        };
+        push_tight_incoming(root, &mut frontier);
+        while let Some(Reverse((_, source_key, _, edge_index))) = frontier.pop() {
+            if !ranked.insert(source_key) {
                 continue;
             }
+            selected.insert(source_key, edge_index);
             let rank: u64 = ranks
                 .len()
                 .try_into()
                 .map_err(|_| "too many unknot-ranked nodes")?;
-            ranks.insert(target_key, rank);
-            for &edge_index in incoming.get(&target_key).into_iter().flatten() {
-                let edge = &self.edges[edge_index];
-                if finalized.contains(&edge.source_key) {
-                    continue;
-                }
-                let proposed = distance
-                    .checked_add(u32::from(edge.cc_cost))
-                    .ok_or("U distance overflow")?;
-                let improve = match distances.get(&edge.source_key) {
-                    None => true,
-                    Some(current) if proposed < *current => true,
-                    Some(current) if proposed == *current => {
-                        selected.get(&edge.source_key).is_none_or(|old| {
-                            let old_edge = &self.edges[*old];
-                            (target_key, edge_index) < (old_edge.target_key, *old)
-                        })
-                    }
-                    _ => false,
-                };
-                if improve {
-                    distances.insert(edge.source_key, proposed);
-                    selected.insert(edge.source_key, edge_index);
-                    queue.push(Reverse((proposed, edge.source_key)));
-                }
-            }
+            ranks.insert(source_key, rank);
+            push_tight_incoming(source_key, &mut frontier);
         }
-        if finalized.len() != self.nodes.len() {
-            return Err(format!(
-                "verified graph has {} nodes unreachable from the unknot",
-                self.nodes.len() - finalized.len()
-            )
-            .into());
+        if ranked.len() != self.nodes.len() {
+            return Err("tight proof subgraph cannot assign cycle-safe unknot routes".into());
         }
         let mut refresh = UnknotRefresh {
-            reachable_nodes: finalized.len(),
+            reachable_nodes: ranked.len(),
             ..UnknotRefresh::default()
         };
         for (key, node) in &mut self.nodes {
@@ -1045,6 +1349,7 @@ impl PopulationGraph {
                     program_version: CheckpointedProofProgram::VERSION,
                     program: edge.program.clone(),
                     certificate_id: edge.certificate_id,
+                    certificate: edge.certificate.clone(),
                     validator_version: VALIDATOR_VERSION.into(),
                 })
             })
@@ -1437,6 +1742,7 @@ mod tests {
                 first_action,
                 program: vec![],
                 certificate_id: None,
+                certificate: None,
             },
             KnowledgeEdge {
                 source_key: source.key,
@@ -1445,6 +1751,7 @@ mod tests {
                 first_action,
                 program: vec![],
                 certificate_id: None,
+                certificate: None,
             },
             KnowledgeEdge {
                 source_key: source.key,
@@ -1453,6 +1760,7 @@ mod tests {
                 first_action,
                 program: vec![],
                 certificate_id: None,
+                certificate: None,
             },
         ];
 
@@ -1462,5 +1770,58 @@ mod tests {
         assert_eq!(source_node.active_acs10_edge, Some(2));
         assert_eq!(refresh.active_routes, 2);
         assert_eq!(refresh.eligible_edges, 3);
+    }
+
+    #[test]
+    fn incremental_strict_relaxation_agrees_with_full_zero_one_bfs() {
+        let mut graph = PopulationGraph::from_unknot([1; 32]).unwrap();
+        let root = graph.unknot_key().unwrap();
+        let source = BraidRepresentation {
+            strands: 2,
+            cyclic_band_generators: false,
+            word: vec![1, 1, 1],
+        }
+        .normalize()
+        .unwrap();
+        let stop = PolicyStopAttestation::PreferredCrossingChange {
+            action: SemanticAction::CrossingChange { position: 1 }
+                .encode_u63()
+                .unwrap(),
+            audit_sha256: [2; 32],
+        };
+        graph.nodes.insert(
+            source.key,
+            KnowledgeNode {
+                representation: source.clone(),
+                policy_stop: stop,
+                u_upper_bound: 99,
+                route_rank: 99,
+                active_unknot_edge: None,
+                acs_route_rank: 0,
+                active_acs10_edge: None,
+            },
+        );
+        graph.edges.push(KnowledgeEdge {
+            source_key: source.key,
+            target_key: root,
+            cc_cost: 1,
+            first_action: SemanticAction::CrossingChange { position: 1 }
+                .encode_u63()
+                .unwrap(),
+            program: Vec::new(),
+            certificate_id: None,
+            certificate: None,
+        });
+        let mut full = graph.clone();
+        graph.relax_unknot_incremental(&[source.key]).unwrap();
+        full.recompute_unknot_routes().unwrap();
+        assert_eq!(
+            graph.nodes[&source.key].u_upper_bound,
+            full.nodes[&source.key].u_upper_bound
+        );
+        assert_eq!(
+            graph.nodes[&source.key].active_unknot_edge,
+            full.nodes[&source.key].active_unknot_edge
+        );
     }
 }

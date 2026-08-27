@@ -16,7 +16,7 @@ use crate::representation::{
 use crate::{PolicyStopAttestation, RepKey, Result};
 use std::collections::{HashSet, VecDeque};
 
-pub const CONNECTED_INSERT_MANIFEST_VERSION: &str = "unknotdb-connected-insert-v0";
+pub const CONNECTED_INSERT_MANIFEST_VERSION: &str = "unknotdb-connected-insert-v1";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ConnectedInsertLimits {
@@ -121,6 +121,7 @@ pub fn force_connected_insert<O: PolicyOracle>(
     }
     let start = initial.output.clone();
     if let Some(u) = graph.u_upper_bound(&start.key) {
+        let terminal = initial.stop_reason == PolicyStopReason::TerminalRepresentation;
         manifest.push_str(&format!("result\talready_covered\t{}\n", u));
         return Ok(ConnectedInsertResult {
             disposition: ConnectedInsertDisposition::AlreadyCovered { u_upper_bound: u },
@@ -132,8 +133,8 @@ pub fn force_connected_insert<O: PolicyOracle>(
             inserted_edges: 0,
             inverse_witnesses_replayed: 0,
             comparison: SolveComparison {
-                policy_only_found: true,
-                policy_only_u_upper_bound: Some(u),
+                policy_only_found: terminal,
+                policy_only_u_upper_bound: terminal.then_some(0),
                 policy_only_simulations: 0,
                 graph_assisted_found: true,
                 graph_assisted_u_upper_bound: Some(u),

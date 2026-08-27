@@ -13,6 +13,7 @@ pub const KEY_SPEC: &str = "sha256(mirror-orbit-normalized-unknotdb-braid-cylind
 pub const ACTION_CODEC: &str = "unknotdb-semantic-action-u63-v0";
 pub const PROGRAM_CODEC: &str = "unknotdb-semantic-program-le-v0";
 pub const CHECKPOINTED_PROGRAM_CODEC: &str = "unknotdb-semantic-checkpoint-program-le-v1";
+pub const ANCHORED_PROGRAM_CODEC: &str = "unknotdb-relative-anchor-program-v1";
 pub const VALIDATOR_VERSION: &str = "unknotdb-runtime-braid-validator-v1";
 
 const MAGIC: [u8; 4] = *b"UKB0";
@@ -575,6 +576,13 @@ pub enum SemanticAction {
     CrossingChange {
         position: u32,
     },
+    /// Deterministic zero-cost theorem macro, legal only when the ordinary
+    /// Artin closure is descending, or its ascending mirror, under
+    /// `descending_crossing_changes_v0`.
+    DescendingCollapse,
+    /// Zero-cost theorem macro backed by a content-addressed labelled planar
+    /// RI/RII/RIII certificate stored beside its graph edge.
+    PlanarCertificateCollapse,
 }
 
 impl SemanticAction {
@@ -615,6 +623,8 @@ impl SemanticAction {
                 }
                 (9, position, 0, sign < 0)
             }
+            Self::DescendingCollapse => (10, 0, 0, false),
+            Self::PlanarCertificateCollapse => (11, 0, 0, false),
         };
         Ok(u64::from(kind)
             | (u64::from(position) << Self::POSITION_SHIFT)
@@ -660,7 +670,7 @@ impl SemanticAction {
                     sign: if negative { -1 } else { 1 },
                 }
             }
-            4..=7 => {
+            4..=7 | 10..=11 => {
                 if position != 0 {
                     return Err("global action has a position payload".into());
                 }
@@ -670,6 +680,8 @@ impl SemanticAction {
                     5 => Self::StabilizePositive,
                     6 => Self::StabilizeNegative,
                     7 => Self::Pass,
+                    10 => Self::DescendingCollapse,
+                    11 => Self::PlanarCertificateCollapse,
                     _ => unreachable!(),
                 }
             }
@@ -970,10 +982,151 @@ impl SemanticAction {
                 let position = cyclic_index(position)?;
                 output.word[position] = -output.word[position];
             }
+            Self::DescendingCollapse => {
+                // Mirror-orbit canonicalization can transport a descending
+                // diagram to its ascending mirror and origin normalization can
+                // move the chosen base point. Existence of either monotone
+                // cyclic traversal is invariant under both coordinate moves.
+                if !has_monotone_traversal_v0(&output)? {
+                    return Err(
+                        "DESCENDING_COLLAPSE input is neither descending nor ascending".into(),
+                    );
+                }
+                output = BraidRepresentation {
+                    strands: 1,
+                    cyclic_band_generators: false,
+                    word: Vec::new(),
+                };
+            }
+            Self::PlanarCertificateCollapse => {
+                return Err("PLANAR_CERTIFICATE_COLLAPSE requires its edge sidecar".into())
+            }
         }
         output.validate()?;
         Ok(output)
     }
+}
+
+/// Return the crossing indices that must be toggled to make an ordinary Artin
+/// braid closure descending. Traversal v0 starts at top strand 0, follows each
+/// strand downward, and closes bottom position `i` to top position `i`.
+/// Positive sigma_i has the branch entering at i over; negative sigma_i has
+/// the branch entering at i+1 over. Each crossing must first be met over.
+pub fn descending_crossing_changes_v0(input: &BraidRepresentation) -> Result<Vec<u32>> {
+    input.validate()?;
+    if input.cyclic_band_generators {
+        return Err("descending-v0 supports ordinary Artin generators only".into());
+    }
+    if !input.is_knot_closure()? {
+        return Err("descending-v0 requires a one-component closure".into());
+    }
+    let strands = usize::from(input.strands);
+    let mut labels: Vec<usize> = (0..strands).collect();
+    let mut events = vec![Vec::<(u32, bool)>::new(); strands];
+    for (crossing, &letter) in input.word.iter().enumerate() {
+        let left = usize::from(letter.unsigned_abs() - 1);
+        let right = left + 1;
+        let left_label = labels[left];
+        let right_label = labels[right];
+        let left_over = letter > 0;
+        let crossing: u32 = crossing.try_into()?;
+        events[left_label].push((crossing, left_over));
+        events[right_label].push((crossing, !left_over));
+        labels.swap(left, right);
+    }
+    let mut bottom_position = vec![0_usize; strands];
+    for (position, label) in labels.into_iter().enumerate() {
+        bottom_position[label] = position;
+    }
+    let mut seen_crossing = vec![false; input.word.len()];
+    let mut seen_label = vec![false; strands];
+    let mut changes = Vec::new();
+    let mut label = 0_usize;
+    loop {
+        if seen_label[label] {
+            break;
+        }
+        seen_label[label] = true;
+        for &(crossing, over) in &events[label] {
+            let index = crossing as usize;
+            if !seen_crossing[index] {
+                seen_crossing[index] = true;
+                if !over {
+                    changes.push(crossing);
+                }
+            }
+        }
+        label = bottom_position[label];
+    }
+    if seen_label.iter().any(|seen| !seen) || seen_crossing.iter().any(|seen| !seen) {
+        return Err("descending-v0 traversal did not cover the knot diagram".into());
+    }
+    Ok(changes)
+}
+
+/// Verify that some exact cyclic base point makes the one-component traversal
+/// descending (all crossings first met over) or ascending (all first met
+/// under). This is the coordinate-invariant terminal predicate used after the
+/// mirror/origin quotient transports a descending certificate.
+fn has_monotone_traversal_v0(input: &BraidRepresentation) -> Result<bool> {
+    input.validate()?;
+    if input.cyclic_band_generators {
+        return Err("descending-v0 supports ordinary Artin generators only".into());
+    }
+    if !input.is_knot_closure()? {
+        return Err("descending-v0 requires a one-component closure".into());
+    }
+    if input.word.is_empty() {
+        return Ok(true);
+    }
+    let strands = usize::from(input.strands);
+    let mut labels: Vec<usize> = (0..strands).collect();
+    let mut events = vec![Vec::<(usize, bool)>::new(); strands];
+    for (crossing, &letter) in input.word.iter().enumerate() {
+        let left = usize::from(letter.unsigned_abs() - 1);
+        let right = left + 1;
+        let left_label = labels[left];
+        let right_label = labels[right];
+        let left_over = letter > 0;
+        events[left_label].push((crossing, left_over));
+        events[right_label].push((crossing, !left_over));
+        labels.swap(left, right);
+    }
+    let mut bottom_position = vec![0_usize; strands];
+    for (position, label) in labels.into_iter().enumerate() {
+        bottom_position[label] = position;
+    }
+    let mut traversal = Vec::with_capacity(input.word.len() * 2);
+    let mut seen_label = vec![false; strands];
+    let mut label = 0_usize;
+    while !seen_label[label] {
+        seen_label[label] = true;
+        traversal.extend_from_slice(&events[label]);
+        label = bottom_position[label];
+    }
+    if seen_label.iter().any(|seen| !seen) || traversal.len() != input.word.len() * 2 {
+        return Err("descending-v0 traversal did not cover the knot diagram".into());
+    }
+    for start in 0..traversal.len() {
+        let mut seen = vec![false; input.word.len()];
+        let mut first_over = None;
+        let mut monotone = true;
+        for offset in 0..traversal.len() {
+            let (crossing, over) = traversal[(start + offset) % traversal.len()];
+            if !seen[crossing] {
+                seen[crossing] = true;
+                if let Some(expected) = first_over {
+                    monotone &= over == expected;
+                } else {
+                    first_over = Some(over);
+                }
+            }
+        }
+        if monotone {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1072,6 +1225,19 @@ pub struct CheckpointedProofProgram {
     pub instructions: Vec<ProofInstruction>,
 }
 
+/// A coordinate-independent proof template plus the torus coordinate at which
+/// it is instantiated by one edge.  `anchor_y` is the position of the first
+/// position-bearing semantic action.  Every stored position in `template` is
+/// relative to that anchor in the action's current cyclic word chart.
+/// `anchor_x` records the generator at that first operation for indexing and
+/// pattern search; replay derives horizontal action semantics from the state.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AnchoredProofProgram {
+    pub template: CheckpointedProofProgram,
+    pub anchor_x: u16,
+    pub anchor_y: u32,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MaterializedProofProgram {
     /// A physical program with no `MIRROR_ORBIT` instructions.
@@ -1092,6 +1258,15 @@ pub struct InvertedProofProgram {
 }
 
 impl CheckpointedProofProgram {
+    pub fn contains_planar_certificate(&self) -> bool {
+        self.instructions.iter().any(|instruction| {
+            matches!(
+                instruction,
+                ProofInstruction::Action(SemanticAction::PlanarCertificateCollapse)
+            )
+        })
+    }
+
     pub const VERSION: u32 = 1;
 
     pub fn encode(&self) -> Result<Vec<u8>> {
@@ -1198,7 +1373,20 @@ impl CheckpointedProofProgram {
                 ProofInstruction::NormalizeOrigin { .. }
                 | ProofInstruction::RotateOriginLeft { .. }
                 | ProofInstruction::MirrorOrbit,
-            ) => Err("edge program cannot start with an origin normalization".into()),
+            ) => {
+                let first_semantic = self.instructions.iter().find_map(|instruction| {
+                    if let ProofInstruction::Action(action) = instruction {
+                        Some(*action)
+                    } else {
+                        None
+                    }
+                });
+                if first_semantic == Some(SemanticAction::PlanarCertificateCollapse) {
+                    Ok(SemanticAction::PlanarCertificateCollapse)
+                } else {
+                    Err("edge program cannot start with an origin normalization".into())
+                }
+            }
             None => Err("checkpointed proof program is empty".into()),
         }
     }
@@ -1221,6 +1409,62 @@ impl CheckpointedProofProgram {
             state = apply_proof_instruction(&state, instruction, index)?;
         }
         Ok(state)
+    }
+
+    /// Factor the position of the first local operation out of the immutable
+    /// program and into an edge binding.  The anchor is held fixed as an
+    /// integer and reduced modulo each later action's current coordinate
+    /// domain, which makes insertion/reduction and origin changes replayable.
+    pub fn anchor_template(&self, source: &BraidRepresentation) -> Result<AnchoredProofProgram> {
+        if self.instructions.is_empty() {
+            return Err("cannot anchor an empty proof program".into());
+        }
+        source.validate()?;
+        let mut state = source.clone();
+        let mut anchor_y = None;
+        let mut anchor_x = 0_u16;
+        let mut instructions = Vec::with_capacity(self.instructions.len());
+        for (index, instruction) in self.instructions.iter().copied().enumerate() {
+            let template_instruction = match instruction {
+                ProofInstruction::Action(action) => {
+                    let template_action = if let Some(position) = action_position(action) {
+                        let domain = action_position_domain(action, &state)?;
+                        let base = if let Some(base) = anchor_y {
+                            base
+                        } else {
+                            anchor_x = action_anchor_generator(action, &state)?;
+                            anchor_y = Some(position);
+                            position
+                        };
+                        let relative = cyclic_difference(position, base, domain)?;
+                        ProofInstruction::Action(action_with_position(action, relative)?)
+                    } else {
+                        instruction
+                    };
+                    state = action.apply(&state).map_err(|error| {
+                        format!(
+                            "cannot anchor instruction {} {:?}: {}",
+                            index, action, error
+                        )
+                    })?;
+                    template_action
+                }
+                _ => {
+                    state = apply_proof_instruction(&state, instruction, index)?;
+                    instruction
+                }
+            };
+            instructions.push(template_instruction);
+        }
+        let anchored = AnchoredProofProgram {
+            template: CheckpointedProofProgram { instructions },
+            anchor_x,
+            anchor_y: anchor_y.unwrap_or(0),
+        };
+        if anchored.materialize(source)? != *self {
+            return Err("anchored program does not materialize to its exact source program".into());
+        }
+        Ok(anchored)
     }
 
     /// Build an exact state-aware inverse. Decreasing primitives need their
@@ -1396,6 +1640,153 @@ impl CheckpointedProofProgram {
     }
 }
 
+impl AnchoredProofProgram {
+    /// Instantiate a relative template in the concrete chart selected by an
+    /// edge.  Replay while materializing makes coordinate domains exact even
+    /// when earlier actions change the word length.
+    pub fn materialize(&self, source: &BraidRepresentation) -> Result<CheckpointedProofProgram> {
+        source.validate()?;
+        let mut state = source.clone();
+        let mut instructions = Vec::with_capacity(self.template.instructions.len());
+        let mut saw_anchor = false;
+        for (index, instruction) in self.template.instructions.iter().copied().enumerate() {
+            let concrete = match instruction {
+                ProofInstruction::Action(action) => {
+                    if let Some(relative) = action_position(action) {
+                        let domain = action_position_domain(action, &state)?;
+                        let first_anchor = !saw_anchor;
+                        if first_anchor {
+                            if relative != 0 || self.anchor_y >= domain {
+                                return Err(
+                                    "program binding is not in canonical anchor form".into()
+                                );
+                            }
+                            saw_anchor = true;
+                        }
+                        let position = cyclic_sum(self.anchor_y, relative, domain)?;
+                        let action = action_with_position(action, position)?;
+                        if first_anchor {
+                            let generator = action_anchor_generator(action, &state)?;
+                            if generator != self.anchor_x {
+                                return Err(
+                                    "program anchor_x does not match its first operation".into()
+                                );
+                            }
+                        }
+                        ProofInstruction::Action(action)
+                    } else {
+                        instruction
+                    }
+                }
+                _ => instruction,
+            };
+            state = apply_proof_instruction(&state, concrete, index)?;
+            instructions.push(concrete);
+        }
+        if !saw_anchor && (self.anchor_x != 0 || self.anchor_y != 0) {
+            return Err("coordinate-free program has a non-zero anchor".into());
+        }
+        Ok(CheckpointedProofProgram { instructions })
+    }
+}
+
+fn action_position(action: SemanticAction) -> Option<u32> {
+    match action {
+        SemanticAction::Reduce { position }
+        | SemanticAction::Commute { position }
+        | SemanticAction::Braid { position }
+        | SemanticAction::Insert { position, .. }
+        | SemanticAction::StabilizeAt { position, .. }
+        | SemanticAction::CrossingChange { position } => Some(position),
+        SemanticAction::Destabilize
+        | SemanticAction::StabilizePositive
+        | SemanticAction::StabilizeNegative
+        | SemanticAction::Pass
+        | SemanticAction::DescendingCollapse
+        | SemanticAction::PlanarCertificateCollapse => None,
+    }
+}
+
+fn action_with_position(action: SemanticAction, position: u32) -> Result<SemanticAction> {
+    Ok(match action {
+        SemanticAction::Reduce { .. } => SemanticAction::Reduce { position },
+        SemanticAction::Commute { .. } => SemanticAction::Commute { position },
+        SemanticAction::Braid { .. } => SemanticAction::Braid { position },
+        SemanticAction::Insert {
+            generator, sign, ..
+        } => SemanticAction::Insert {
+            position,
+            generator,
+            sign,
+        },
+        SemanticAction::StabilizeAt { sign, .. } => SemanticAction::StabilizeAt { position, sign },
+        SemanticAction::CrossingChange { .. } => SemanticAction::CrossingChange { position },
+        _ => return Err("global semantic action has no anchor position".into()),
+    })
+}
+
+fn action_position_domain(action: SemanticAction, state: &BraidRepresentation) -> Result<u32> {
+    let len: u32 = state
+        .word
+        .len()
+        .try_into()
+        .map_err(|_| "word is too long for an anchored program")?;
+    match action {
+        SemanticAction::StabilizeAt { position, .. } => {
+            let domain = len.checked_add(1).ok_or("word-gap domain overflow")?;
+            if position >= domain {
+                return Err("STABILIZE_AT anchor position is outside word gaps".into());
+            }
+            Ok(domain)
+        }
+        _ if action_position(action).is_some() => {
+            if len == 0 {
+                if matches!(action, SemanticAction::Insert { position: 0, .. }) {
+                    Ok(1)
+                } else {
+                    Err("position-bearing action has an empty coordinate domain".into())
+                }
+            } else {
+                let position = action_position(action).unwrap();
+                if position >= len {
+                    return Err("action anchor position is outside the cyclic word".into());
+                }
+                Ok(len)
+            }
+        }
+        _ => Err("global semantic action has no coordinate domain".into()),
+    }
+}
+
+fn action_anchor_generator(action: SemanticAction, state: &BraidRepresentation) -> Result<u16> {
+    match action {
+        SemanticAction::Insert { generator, .. } => Ok(generator),
+        SemanticAction::StabilizeAt { .. } => Ok(state.strands),
+        _ => {
+            let position = action_position(action).ok_or("action has no anchor generator")?;
+            state
+                .word
+                .get(position as usize)
+                .map(|letter| letter.unsigned_abs())
+                .ok_or_else(|| "anchor generator position is outside the word".into())
+        }
+    }
+}
+
+fn cyclic_difference(position: u32, anchor: u32, domain: u32) -> Result<u32> {
+    if domain == 0 || position >= domain {
+        return Err("invalid anchored coordinate domain".into());
+    }
+    Ok((position + domain - anchor % domain) % domain)
+}
+
+fn cyclic_sum(anchor: u32, relative: u32, domain: u32) -> Result<u32> {
+    if domain == 0 || relative >= domain {
+        return Err("invalid relative program coordinate".into());
+    }
+    Ok((anchor % domain + relative) % domain)
+}
+
 fn apply_proof_instruction(
     state: &BraidRepresentation,
     instruction: ProofInstruction,
@@ -1531,6 +1922,12 @@ fn invert_semantic_action(
             exact(SemanticAction::CrossingChange { position })
         }
         SemanticAction::Pass => Err("PASS has no proof-program inverse".into()),
+        SemanticAction::DescendingCollapse => {
+            Err("DESCENDING_COLLAPSE is a one-way theorem macro".into())
+        }
+        SemanticAction::PlanarCertificateCollapse => {
+            Err("PLANAR_CERTIFICATE_COLLAPSE is a one-way theorem macro".into())
+        }
     }
 }
 
@@ -1594,11 +1991,49 @@ fn semantic_first_inverse(
         .len()
         .try_into()
         .map_err(|_| "word length does not fit action transport")?;
-    let first_action = transformed_action.normalized_to_input(source_to_transformed, source_len)?;
     let transformed_after = transformed_action.apply(&transformed_source)?;
-    let first_after = first_action.apply(source)?;
-    let after_witness = coordinate_witness_between(&first_after, &transformed_after)
-        .ok_or("cannot transport inverse coordinate prefix through its first action")?;
+    let (first_action, after_witness) = match transformed_action {
+        SemanticAction::StabilizePositive | SemanticAction::StabilizeNegative => {
+            // A global Markov stabilization appends at the current linear
+            // origin. Moving an origin prefix past it therefore requires the
+            // proof-capable exact-gap form; applying the same global action
+            // before the prefix would insert at a different cyclic gap.
+            let transformed_sign =
+                if matches!(transformed_action, SemanticAction::StabilizePositive) {
+                    1
+                } else {
+                    -1
+                };
+            let source_sign = if source_to_transformed.mirrored {
+                -transformed_sign
+            } else {
+                transformed_sign
+            };
+            let mut transported = None;
+            for position in 0..=source_len {
+                let candidate = SemanticAction::StabilizeAt {
+                    position,
+                    sign: source_sign,
+                };
+                let candidate_after = candidate.apply(source)?;
+                if let Some(witness) =
+                    coordinate_witness_between(&candidate_after, &transformed_after)
+                {
+                    transported = Some((candidate, witness));
+                    break;
+                }
+            }
+            transported.ok_or("cannot transport stabilization through inverse coordinate prefix")?
+        }
+        _ => {
+            let action =
+                transformed_action.normalized_to_input(source_to_transformed, source_len)?;
+            let after = action.apply(source)?;
+            let witness = coordinate_witness_between(&after, &transformed_after)
+                .ok_or("cannot transport inverse coordinate prefix through its first action")?;
+            (action, witness)
+        }
+    };
 
     let mut instructions = vec![ProofInstruction::Action(first_action)];
     if after_witness.mirrored {
@@ -1636,6 +2071,26 @@ pub fn verify_edge_program(
     stated_first_action: u64,
     stated_cc_cost: u8,
 ) -> Result<()> {
+    verify_edge_program_with_certificate(
+        source_encoding,
+        target_encoding,
+        program_encoding,
+        stated_program_version,
+        stated_first_action,
+        stated_cc_cost,
+        None,
+    )
+}
+
+pub fn verify_edge_program_with_certificate(
+    source_encoding: &[u8],
+    target_encoding: &[u8],
+    program_encoding: &[u8],
+    stated_program_version: u32,
+    stated_first_action: u64,
+    stated_cc_cost: u8,
+    certificate: Option<&[u8]>,
+) -> Result<()> {
     let source = BraidRepresentation::decode(source_encoding)?;
     let target = BraidRepresentation::decode(target_encoding)?;
     if !source.is_normalized()? || !target.is_normalized()? {
@@ -1655,12 +2110,50 @@ pub fn verify_edge_program(
         }
         CheckpointedProofProgram::VERSION => {
             let program = CheckpointedProofProgram::decode(program_encoding)?;
-            (
-                program.first_action()?,
-                program.cc_cost(),
-                program.replay(&source)?,
-                true,
-            )
+            let first = program.first_action()?;
+            if program.contains_planar_certificate() {
+                let canonical_unknot = BraidRepresentation {
+                    strands: 1,
+                    cyclic_band_generators: false,
+                    word: Vec::new(),
+                };
+                if target != canonical_unknot {
+                    return Err("planar certificate edge target is not the canonical unknot".into());
+                }
+                let certificate = certificate.ok_or("planar certificate edge has no sidecar")?;
+                let mut replayed = source.clone();
+                let mut collapsed = false;
+                for (index, instruction) in program.instructions.iter().copied().enumerate() {
+                    if instruction
+                        == ProofInstruction::Action(SemanticAction::PlanarCertificateCollapse)
+                    {
+                        if collapsed {
+                            return Err(
+                                "planar certificate program contains multiple collapses".into()
+                            );
+                        }
+                        crate::planar::verify_certificate(&replayed, certificate)?;
+                        replayed = canonical_unknot.clone();
+                        collapsed = true;
+                    } else {
+                        if collapsed {
+                            return Err(
+                                "planar certificate collapse is not the final instruction".into()
+                            );
+                        }
+                        replayed = apply_proof_instruction(&replayed, instruction, index)?;
+                    }
+                }
+                if !collapsed {
+                    return Err("planar certificate program has no collapse".into());
+                }
+                (first, program.cc_cost(), replayed, true)
+            } else {
+                if certificate.is_some() {
+                    return Err("non-planar proof edge carries a planar sidecar".into());
+                }
+                (first, program.cc_cost(), program.replay(&source)?, true)
+            }
         }
         other => return Err(format!("unsupported edge program version {other}").into()),
     };
@@ -1956,6 +2449,7 @@ mod tests {
             },
             SemanticAction::Pass,
             SemanticAction::CrossingChange { position: 0 },
+            SemanticAction::PlanarCertificateCollapse,
         ];
         let witness = NormalizationWitness {
             mirrored: false,
@@ -1973,6 +2467,40 @@ mod tests {
                 .unwrap(),
             SemanticAction::CrossingChange { position: 3 }
         );
+    }
+
+    #[test]
+    fn anchored_templates_factor_a_shared_torus_translation() {
+        let source = BraidRepresentation {
+            strands: 3,
+            cyclic_band_generators: false,
+            word: vec![1, 2, 1, -2],
+        };
+        let translated = |anchor: u32, crossing: u32| CheckpointedProofProgram {
+            instructions: vec![
+                ProofInstruction::Action(SemanticAction::Insert {
+                    position: anchor,
+                    generator: 1,
+                    sign: 1,
+                }),
+                ProofInstruction::Action(SemanticAction::Reduce { position: anchor }),
+                ProofInstruction::Action(SemanticAction::CrossingChange { position: crossing }),
+            ],
+        };
+        let at_three = translated(3, 1);
+        let at_one = translated(1, 3);
+        let anchored_three = at_three.anchor_template(&source).unwrap();
+        let anchored_one = at_one.anchor_template(&source).unwrap();
+
+        assert_eq!(anchored_three.anchor_y, 3);
+        assert_eq!(anchored_one.anchor_y, 1);
+        assert_eq!(anchored_three.anchor_x, 1);
+        assert_eq!(anchored_three.template, anchored_one.template);
+        assert_eq!(anchored_three.materialize(&source).unwrap(), at_three);
+        assert_eq!(anchored_one.materialize(&source).unwrap(), at_one);
+        let mut wrong_binding = anchored_one;
+        wrong_binding.anchor_x = 2;
+        assert!(wrong_binding.materialize(&source).is_err());
     }
 
     #[test]
@@ -2007,6 +2535,39 @@ mod tests {
             0,
             program.actions[0].encode_u63().unwrap(),
             1,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn planar_certificate_accepts_an_exact_zero_cost_prefix() {
+        let source = BraidRepresentation {
+            strands: 2,
+            cyclic_band_generators: false,
+            word: vec![-1, 1, 1],
+        };
+        let target = BraidRepresentation {
+            strands: 1,
+            cyclic_band_generators: false,
+            word: vec![],
+        };
+        let program = CheckpointedProofProgram {
+            instructions: vec![
+                ProofInstruction::MirrorOrbit,
+                ProofInstruction::MirrorOrbit,
+                ProofInstruction::Action(SemanticAction::PlanarCertificateCollapse),
+            ],
+        };
+        verify_edge_program_with_certificate(
+            &source.encode().unwrap(),
+            &target.encode().unwrap(),
+            &program.encode().unwrap(),
+            CheckpointedProofProgram::VERSION,
+            SemanticAction::PlanarCertificateCollapse
+                .encode_u63()
+                .unwrap(),
+            0,
+            Some(crate::planar::TREFOIL_TEST_CERTIFICATE),
         )
         .unwrap();
     }
@@ -2261,6 +2822,24 @@ mod tests {
     }
 
     #[test]
+    fn semantic_first_transports_stabilization_to_an_exact_word_gap() {
+        let source = braid(&[1, -2, 1, 2]);
+        let prefixed = CheckpointedProofProgram {
+            instructions: vec![
+                ProofInstruction::RotateOriginLeft { amount: 2 },
+                ProofInstruction::Action(SemanticAction::StabilizePositive),
+            ],
+        };
+        let expected = prefixed.replay(&source).unwrap();
+        let semantic_first = prefixed.canonicalize_semantic_first(&source).unwrap();
+        assert!(matches!(
+            semantic_first.first_action().unwrap(),
+            SemanticAction::StabilizeAt { sign: 1, .. }
+        ));
+        assert_eq!(semantic_first.replay(&source).unwrap(), expected);
+    }
+
+    #[test]
     fn proof_replay_rejects_illegal_and_control_actions() {
         let source = braid(&[1, 2]);
         assert!(SemanticAction::Reduce { position: 0 }
@@ -2273,5 +2852,36 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("controller action"));
+    }
+
+    #[test]
+    fn descending_v0_changes_one_crossing_of_the_positive_trefoil() {
+        let trefoil = BraidRepresentation {
+            strands: 2,
+            cyclic_band_generators: false,
+            word: vec![1, 1, 1],
+        };
+        let changes = descending_crossing_changes_v0(&trefoil).unwrap();
+        assert_eq!(changes, vec![1]);
+        let descending = SemanticAction::CrossingChange {
+            position: changes[0],
+        }
+        .apply(&trefoil)
+        .unwrap();
+        assert!(descending_crossing_changes_v0(&descending)
+            .unwrap()
+            .is_empty());
+        let collapsed = SemanticAction::DescendingCollapse
+            .apply(&descending)
+            .unwrap();
+        assert_eq!(collapsed.strands, 1);
+        assert!(collapsed.word.is_empty());
+        let ascending = descending.mirrored().unwrap();
+        assert_eq!(
+            descending_crossing_changes_v0(&ascending).unwrap().len(),
+            ascending.word.len()
+        );
+        assert!(SemanticAction::DescendingCollapse.apply(&ascending).is_ok());
+        assert!(SemanticAction::DescendingCollapse.apply(&trefoil).is_err());
     }
 }

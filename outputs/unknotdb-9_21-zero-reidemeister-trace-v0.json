@@ -1,0 +1,200 @@
+{
+  "format": "unknotdb-labelled-reidemeister-trace-v0",
+  "engine": {
+    "spherogram_version": "2.4.1",
+    "snappy_version": "3.3.2",
+    "spherogram_module": "/private/tmp/unknotdb-snappy312.y7B7UW/lib/python3.12/site-packages/spherogram/__init__.py",
+    "algorithm": "lexicographic-RI/RII-then-RIII-v0",
+    "type_iii_limit": 5000
+  },
+  "input": {
+    "ordinary_artin_braid_word": [
+      -5,
+      4,
+      3,
+      -2,
+      3,
+      -4,
+      3,
+      5,
+      2,
+      -3,
+      -1,
+      -2,
+      3,
+      -4,
+      3,
+      -2,
+      1,
+      3,
+      4
+    ],
+    "crossings": 19
+  },
+  "changed": true,
+  "moves": [
+    {
+      "move": "RII",
+      "at": "x0",
+      "eliminated": [
+        "x0",
+        "x7"
+      ],
+      "before_sha256": "e31dfc0403fb7b848b952705a98f43054ed2ba361cbad51836a3d1c09598f762",
+      "after_sha256": "be30156e2ff6c6f179ae7a4bdc2f9ce7fb5d06ed995847c4a4874b6cf868584d",
+      "remaining_crossings": 17
+    },
+    {
+      "move": "RII",
+      "at": "x1",
+      "eliminated": [
+        "x1",
+        "x5"
+      ],
+      "before_sha256": "be30156e2ff6c6f179ae7a4bdc2f9ce7fb5d06ed995847c4a4874b6cf868584d",
+      "after_sha256": "e70c14f67de5d54adb5efd7c6808118ef7c399979e496c272e7ee5b7a59940be",
+      "remaining_crossings": 15
+    },
+    {
+      "move": "RII",
+      "at": "x10",
+      "eliminated": [
+        "x10",
+        "x16"
+      ],
+      "before_sha256": "e70c14f67de5d54adb5efd7c6808118ef7c399979e496c272e7ee5b7a59940be",
+      "after_sha256": "e1b4b28a990328b229805f86d6436a26489f5facdb691e1ff90791cf35081abd",
+      "remaining_crossings": 13
+    },
+    {
+      "move": "RII",
+      "at": "x13",
+      "eliminated": [
+        "x13",
+        "x18"
+      ],
+      "before_sha256": "e1b4b28a990328b229805f86d6436a26489f5facdb691e1ff90791cf35081abd",
+      "after_sha256": "17fe9db97e34490a3cbd61ef4f451f6d31eb364dc398cb0aed3902d78be49d41",
+      "remaining_crossings": 11
+    },
+    {
+      "move": "RII",
+      "at": "x3",
+      "eliminated": [
+        "x3",
+        "x8"
+      ],
+      "before_sha256": "17fe9db97e34490a3cbd61ef4f451f6d31eb364dc398cb0aed3902d78be49d41",
+      "after_sha256": "e5852f900331b6bab34de538f5055d575b10ba3bf9c97f2fd87e92dcb8a251f6",
+      "remaining_crossings": 9
+    },
+    {
+      "move": "RIII",
+      "triple": [
+        [
+          "x11",
+          3
+        ],
+        [
+          "x9",
+          2
+        ],
+        [
+          "x12",
+          3
+        ]
+      ],
+      "before_sha256": "e5852f900331b6bab34de538f5055d575b10ba3bf9c97f2fd87e92dcb8a251f6",
+      "after_sha256": "b2da3f22e557b8293724634dc05a823335d4ba5e2cc02e803c9a77f54350a2a2",
+      "remaining_crossings": 9
+    },
+    {
+      "move": "RII",
+      "at": "x11",
+      "eliminated": [
+        "x11",
+        "x6"
+      ],
+      "before_sha256": "b2da3f22e557b8293724634dc05a823335d4ba5e2cc02e803c9a77f54350a2a2",
+      "after_sha256": "73d919455961004d346cb8aee4b5d02eb6c477b7898d9bb78879e37508559de0",
+      "remaining_crossings": 7
+    },
+    {
+      "move": "RIII",
+      "triple": [
+        [
+          "x15",
+          1
+        ],
+        [
+          "x12",
+          0
+        ],
+        [
+          "x9",
+          1
+        ]
+      ],
+      "before_sha256": "73d919455961004d346cb8aee4b5d02eb6c477b7898d9bb78879e37508559de0",
+      "after_sha256": "3e83de9b2790d25000214f367bb12b25e1f02698ea33cf3954c1a8acdc3d874b",
+      "remaining_crossings": 7
+    },
+    {
+      "move": "RII",
+      "at": "x15",
+      "eliminated": [
+        "x15",
+        "x4"
+      ],
+      "before_sha256": "3e83de9b2790d25000214f367bb12b25e1f02698ea33cf3954c1a8acdc3d874b",
+      "after_sha256": "65d006a2886903bbc61fe4b16a7ebbfdd0456bf4cecfac2f7af15e4f0bbc91a3",
+      "remaining_crossings": 5
+    },
+    {
+      "move": "RII",
+      "at": "x2",
+      "eliminated": [
+        "x2",
+        "x9"
+      ],
+      "before_sha256": "65d006a2886903bbc61fe4b16a7ebbfdd0456bf4cecfac2f7af15e4f0bbc91a3",
+      "after_sha256": "b0c122acdc8931b52df1337e8439115dfb7807d59a801148c883fa39f8e4dae0",
+      "remaining_crossings": 3
+    },
+    {
+      "move": "RI",
+      "at": "x12",
+      "eliminated": [
+        "x12"
+      ],
+      "before_sha256": "b0c122acdc8931b52df1337e8439115dfb7807d59a801148c883fa39f8e4dae0",
+      "after_sha256": "96328a4ec8f021d7ade53e535d6915c8c314340f24c6bd10a98088e89c01db20",
+      "remaining_crossings": 2
+    },
+    {
+      "move": "RI",
+      "at": "x14",
+      "eliminated": [
+        "x14"
+      ],
+      "before_sha256": "96328a4ec8f021d7ade53e535d6915c8c314340f24c6bd10a98088e89c01db20",
+      "after_sha256": "567ba00daff6748f64d94b150bc820005686e5d5748a57128d0badebdddecfb8",
+      "remaining_crossings": 1
+    },
+    {
+      "move": "RI",
+      "at": "x17",
+      "eliminated": [
+        "x17"
+      ],
+      "before_sha256": "567ba00daff6748f64d94b150bc820005686e5d5748a57128d0badebdddecfb8",
+      "after_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "remaining_crossings": 0
+    }
+  ],
+  "final": {
+    "crossings": 0,
+    "state_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+    "unlinked_unknot_components": 1
+  }
+}

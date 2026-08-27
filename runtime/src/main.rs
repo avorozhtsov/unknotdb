@@ -5,7 +5,9 @@ use std::process::Command;
 use std::time::{Duration, Instant};
 use unknotdb_runtime::{
     campaign::{read_rf_corpus_tsv, run_rf_campaign, RfCampaignLimits},
+    catalogue_planar_import::import_catalogue_planar,
     census::{complete_natural_braids, enumerate_natural_braids, run_natural_braid_census},
+    descending::{run_descending_backfill, DescendingBackfillLimits},
     expansion::{
         acs10_comparison_report, improve_quality, measure_b5_cohort, reverse_expand,
         verify_key_superset, B4RegressionReport, QualityLimits, ReverseLimits,
@@ -14,7 +16,12 @@ use unknotdb_runtime::{
         expand_frontier_seed, FrontierDisposition, FrontierRunBatch, FrontierRunManifest,
         ScrambleLimits,
     },
+    high_u::{
+        improve_high_u_one_cc_branches, improve_high_u_with_policy, improve_high_u_with_templates,
+        AnchoredTemplateProposal, HighUBranchLimits, HighUPolicyLimits, HighUTemplateLimits,
+    },
     optimizer::{optimize_vertex, OptimizerBudget, OptimizerPolicyProfile, OptimizerProvenance},
+    planar_import::import_planar_u1,
     policy::{
         preprocess_to_stopping_point, trace_policy_edge, ExternalPolicyOracle, PolicyLimits,
         PolicyOracle, POLICY_ADAPTER_VERSION,
@@ -25,6 +32,7 @@ use unknotdb_runtime::{
         BraidRepresentation, CheckpointedProofProgram, ProofProgram, SemanticAction,
         PACKED_REPRESENTATION_CODEC, VALIDATOR_VERSION,
     },
+    rf_import::{import_best_traces, import_descending_corpus, read_best_trace_tsv},
     synthetic_edges, synthetic_key, synthetic_nodes,
     targeted::{force_connected_insert, ConnectedInsertDisposition, ConnectedInsertLimits},
     write_snapshot_atomic, GraphSnapshot, HotRoute, PolicyStopAttestation, RepKey, Result,
@@ -73,6 +81,12 @@ usage:
       [--max-policy-plies 16] [--max-semantic-moves 4]
       --oracle <program> [oracle arguments...]
   unknotdb-runtime compact-snapshot <input.sqlite> <output.sqlite>
+  unknotdb-runtime migrate-policy-adapter-v4 <input.sqlite> <output.sqlite>
+      --manifest <manifest.tsv>
+  unknotdb-runtime report-program-templates <snapshot.sqlite>
+      --report <report.tsv> [--limit 100]
+  unknotdb-runtime program-template-occurrences <snapshot.sqlite> <template-id>
+      [--limit 100]
   unknotdb-runtime freeze-b4-regression <snapshot.sqlite>
       --seed-manifest <completion.tsv> --gate <gate.txt>
   unknotdb-runtime improve-quality <input.sqlite> <output.sqlite>
@@ -96,10 +110,51 @@ usage:
       [--max-strands 10] [--max-word-length 64]
   unknotdb-runtime campaign-rf-corpus <input.sqlite> <output.sqlite>
       --corpus <corpus.tsv> --manifest <manifest.tsv>
-      [--max-priority 0] [--max-insert-attempts 20]
+      [--max-priority 0] [--max-input-strands 12] [--max-input-word-length 48]
+      [--max-insert-attempts 20] [--skip-missing 0]
       [--total-insert-simulations 5000] [--per-item-simulations 250]
+      [--max-track-depth 12]
       [--total-optimizer-simulations 5000] [--per-item-optimizer-simulations 250]
       [--optimize-above-u 10] [--max-policy-plies 128] [--max-semantic-moves 32]
+      --oracle <program> [oracle arguments...]
+  unknotdb-runtime improve-high-u-policy <input.sqlite> <output.sqlite>
+      --manifest <manifest.tsv> [--min-u 1850] [--cohort-limit 32]
+      [--keys-file PATH]
+      [--per-node-simulations 250] [--total-simulations 8000]
+      [--max-track-depth 32] [--max-policy-plies 128] [--max-semantic-moves 32]
+      --oracle <program> [oracle arguments...]
+  unknotdb-runtime improve-high-u-branch <input.sqlite> <output.sqlite>
+      --manifest <manifest.tsv> [--min-u 8] [--cohort-limit 2000]
+      [--keys-file PATH]
+      [--max-branches-per-node 64] [--branch-depth 1]
+      [--max-policy-plies 128] [--max-semantic-moves 32]
+      --oracle <program> [oracle arguments...]
+  unknotdb-runtime improve-high-u-templates <input.sqlite> <output.sqlite>
+      --manifest <manifest.tsv> --keys-file <keys.txt>
+      [--min-u 11] [--cohort-limit 978] [--max-templates 100]
+      [--max-anchors-per-node 64]
+  unknotdb-runtime descending-backfill <input.sqlite> <output.sqlite>
+      --manifest <manifest.tsv> [--key HEX | --keys-file PATH]
+      [--min-u 1850] [--cohort-limit 64]
+      [--max-word-length 96] [--full-recompute-threshold 16]
+      [--max-policy-plies 128] [--max-semantic-moves 32]
+      --oracle <program> [oracle arguments...]
+  unknotdb-runtime import-planar-u1 <input.sqlite> <output.sqlite>
+      --source-key HEX --cc-position N --certificate trace.json --manifest manifest.tsv
+      [--max-policy-plies 128] [--max-semantic-moves 32]
+      --oracle <program> [oracle arguments...]
+  unknotdb-runtime import-catalogue-planar <input.sqlite> <output.sqlite>
+      --corpus witnesses.json [--corpus more.json] --manifest manifest.tsv
+      [--max-policy-plies 128] [--max-semantic-moves 32]
+      --oracle <program> [oracle arguments...]
+  unknotdb-runtime import-rf-best <input.sqlite> <output.sqlite>
+      --corpus <corpus.tsv> --best <best-witnesses.tsv> --manifest <manifest.tsv>
+      [--only-representation-id ID]
+      [--max-policy-plies 128] [--max-semantic-moves 32]
+      --oracle <program> [oracle arguments...]
+  unknotdb-runtime import-rf-descending <input.sqlite> <output.sqlite>
+      --corpus <corpus.tsv> --manifest <manifest.tsv> [--skip N] [--limit N]
+      [--max-policy-plies 128] [--max-semantic-moves 32]
       --oracle <program> [oracle arguments...]
   unknotdb-runtime inspect <snapshot.sqlite>
   unknotdb-runtime bench <snapshot.sqlite> [--queries N] [--miss-percent N]
@@ -1030,7 +1085,14 @@ fn run() -> Result<()> {
                 max_priority: flag_u64(command_args, "--max-priority", 0)?
                     .try_into()
                     .map_err(|_| "--max-priority must fit u8")?,
+                max_input_strands: flag_u64(command_args, "--max-input-strands", 12)?
+                    .try_into()
+                    .map_err(|_| "--max-input-strands must fit u16")?,
+                max_input_word_length: flag_u64(command_args, "--max-input-word-length", 48)?
+                    .try_into()
+                    .map_err(|_| "--max-input-word-length must fit u32")?,
                 max_insert_attempts: flag_u64(command_args, "--max-insert-attempts", 20)? as usize,
+                skip_missing: flag_u64(command_args, "--skip-missing", 0)? as usize,
                 total_insert_simulations: flag_u64(
                     command_args,
                     "--total-insert-simulations",
@@ -1041,6 +1103,9 @@ fn run() -> Result<()> {
                 per_item_simulations: flag_u64(command_args, "--per-item-simulations", 250)?
                     .try_into()
                     .map_err(|_| "--per-item-simulations must fit u32")?,
+                max_track_depth: flag_u64(command_args, "--max-track-depth", 12)?
+                    .try_into()
+                    .map_err(|_| "--max-track-depth must fit u16")?,
                 total_optimizer_simulations: flag_u64(
                     command_args,
                     "--total-optimizer-simulations",
@@ -1114,6 +1179,609 @@ fn run() -> Result<()> {
                 run.optimizer_simulations,
             );
         }
+        "improve-high-u-policy" => {
+            let oracle_index = args
+                .iter()
+                .position(|arg| arg == "--oracle")
+                .ok_or("improve-high-u-policy needs --oracle <program> [arguments...]")?;
+            let command_args = &args[..oracle_index];
+            let input = command_args
+                .get(1)
+                .map(PathBuf::from)
+                .ok_or("improve-high-u-policy needs an input snapshot")?;
+            let output = command_args
+                .get(2)
+                .map(PathBuf::from)
+                .ok_or("improve-high-u-policy needs an output snapshot")?;
+            let manifest = flag_path(command_args, "--manifest")?;
+            ensure_new_outputs(&input, &[&output, &manifest])?;
+            let limits = HighUPolicyLimits {
+                min_u: flag_u64(command_args, "--min-u", 1850)?
+                    .try_into()
+                    .map_err(|_| "--min-u must fit u32")?,
+                cohort_limit: flag_u64(command_args, "--cohort-limit", 32)? as usize,
+                per_node_simulations: flag_u64(command_args, "--per-node-simulations", 250)?
+                    .try_into()
+                    .map_err(|_| "--per-node-simulations must fit u32")?,
+                total_simulations: flag_u64(command_args, "--total-simulations", 8000)?
+                    .try_into()
+                    .map_err(|_| "--total-simulations must fit u32")?,
+                max_track_depth: flag_u64(command_args, "--max-track-depth", 32)?
+                    .try_into()
+                    .map_err(|_| "--max-track-depth must fit u16")?,
+                policy_limits: PolicyLimits {
+                    max_policy_plies: flag_u64(command_args, "--max-policy-plies", 128)?
+                        .try_into()
+                        .map_err(|_| "--max-policy-plies must fit u32")?,
+                    max_semantic_moves: flag_u64(command_args, "--max-semantic-moves", 32)?
+                        .try_into()
+                        .map_err(|_| "--max-semantic-moves must fit u32")?,
+                },
+            };
+            let selected_keys = optional_flag_string(command_args, "--keys-file")?
+                .map(|path| read_rep_keys(Path::new(&path)))
+                .transpose()?;
+            let oracle_program = args
+                .get(oracle_index + 1)
+                .ok_or("--oracle needs a program")?;
+            let oracle_args = &args[oracle_index + 2..];
+            let snapshot_id = unknotdb::util::sha256_hex(&std::fs::read(&input)?);
+            let (mut population, parent_meta) = PopulationGraph::from_snapshot(&input)?;
+            let mut oracle = ExternalPolicyOracle::spawn(Path::new(oracle_program), oracle_args)?;
+            if parent_meta.policy_model_id.as_deref() != Some(oracle.model_id()) {
+                return Err("snapshot and high-U oracle model IDs differ".into());
+            }
+            let run = improve_high_u_with_policy(
+                &mut population,
+                &mut oracle,
+                &snapshot_id,
+                limits,
+                selected_keys.as_deref(),
+            )?;
+            let (nodes, edges) = population.into_snapshot_records()?;
+            let meta = SnapshotMeta::braid_mirror_orbit_v1(
+                format!(
+                    "high-u-l1000-policy-v0-from-{}",
+                    parent_meta.source_generation
+                ),
+                oracle.model_id(),
+            );
+            write_snapshot_atomic(&output, &meta, nodes, edges)?;
+            write_text_atomic(&manifest, &run.manifest)?;
+            validate_published_snapshot(&output)?;
+            verify_key_superset(&input, &output)?;
+            println!(
+                "high-U policy snapshot: {} selected={} improved={} excluded={} collateral={} U_decrease={} nodes+={} edges+={} simulations={}",
+                output.display(),
+                run.selected,
+                run.improved,
+                run.excluded,
+                run.collateral_improvements,
+                run.total_selected_u_decrease,
+                run.inserted_nodes,
+                run.inserted_edges,
+                run.total_simulations,
+            );
+        }
+        "improve-high-u-branch" => {
+            let oracle_index = args
+                .iter()
+                .position(|arg| arg == "--oracle")
+                .ok_or("improve-high-u-branch needs --oracle <program> [arguments...]")?;
+            let command_args = &args[..oracle_index];
+            let input = command_args
+                .get(1)
+                .map(PathBuf::from)
+                .ok_or("improve-high-u-branch needs an input snapshot")?;
+            let output = command_args
+                .get(2)
+                .map(PathBuf::from)
+                .ok_or("improve-high-u-branch needs an output snapshot")?;
+            let manifest = flag_path(command_args, "--manifest")?;
+            ensure_new_outputs(&input, &[&output, &manifest])?;
+            let min_u: u32 = flag_u64(command_args, "--min-u", 8)?
+                .try_into()
+                .map_err(|_| "--min-u must fit u32")?;
+            let cohort_limit = flag_u64(command_args, "--cohort-limit", 2000)? as usize;
+            let max_branches = flag_u64(command_args, "--max-branches-per-node", 64)? as usize;
+            let branch_depth: u16 = flag_u64(command_args, "--branch-depth", 1)?
+                .try_into()
+                .map_err(|_| "--branch-depth must fit u16")?;
+            let policy_limits = PolicyLimits {
+                max_policy_plies: flag_u64(command_args, "--max-policy-plies", 128)?
+                    .try_into()
+                    .map_err(|_| "--max-policy-plies must fit u32")?,
+                max_semantic_moves: flag_u64(command_args, "--max-semantic-moves", 32)?
+                    .try_into()
+                    .map_err(|_| "--max-semantic-moves must fit u32")?,
+            };
+            let selected_keys = optional_flag_string(command_args, "--keys-file")?
+                .map(|path| read_rep_keys(Path::new(&path)))
+                .transpose()?;
+            let oracle_program = args
+                .get(oracle_index + 1)
+                .ok_or("--oracle needs a program")?;
+            let oracle_args = &args[oracle_index + 2..];
+            let snapshot_id = unknotdb::util::sha256_hex(&std::fs::read(&input)?);
+            let (mut population, parent_meta) = PopulationGraph::from_snapshot(&input)?;
+            let mut oracle = ExternalPolicyOracle::spawn(Path::new(oracle_program), oracle_args)?;
+            if parent_meta.policy_model_id.as_deref() != Some(oracle.model_id()) {
+                return Err("snapshot and one-CC branch oracle model IDs differ".into());
+            }
+            let run = improve_high_u_one_cc_branches(
+                &mut population,
+                &mut oracle,
+                &snapshot_id,
+                HighUBranchLimits {
+                    min_u,
+                    cohort_limit,
+                    max_branches_per_node: max_branches,
+                    max_depth: branch_depth,
+                    policy_limits,
+                },
+                selected_keys.as_deref(),
+            )?;
+            let (nodes, edges) = population.into_snapshot_records()?;
+            let meta = SnapshotMeta::braid_mirror_orbit_v1(
+                format!(
+                    "high-u-one-cc-branch-v0-from-{}",
+                    parent_meta.source_generation
+                ),
+                oracle.model_id(),
+            );
+            write_snapshot_atomic(&output, &meta, nodes, edges)?;
+            write_text_atomic(&manifest, &run.manifest)?;
+            validate_published_snapshot(&output)?;
+            verify_key_superset(&input, &output)?;
+            println!(
+                "high-U branch snapshot: {} selected={} improved={} excluded={} branches={} hits={} collateral={} edges+={}",
+                output.display(),
+                run.selected,
+                run.improved,
+                run.excluded,
+                run.evaluated_branches,
+                run.exact_graph_hits,
+                run.collateral_improvements,
+                run.inserted_edges,
+            );
+        }
+        "improve-high-u-templates" => {
+            let input = args
+                .get(1)
+                .map(PathBuf::from)
+                .ok_or("improve-high-u-templates needs an input snapshot")?;
+            let output = args
+                .get(2)
+                .map(PathBuf::from)
+                .ok_or("improve-high-u-templates needs an output snapshot")?;
+            let manifest = flag_path(&args[2..], "--manifest")?;
+            let keys_path = flag_path(&args[2..], "--keys-file")?;
+            ensure_new_outputs(&input, &[&output, &manifest])?;
+            let min_u: u32 = flag_u64(&args[2..], "--min-u", 11)?.try_into()?;
+            let cohort_limit = flag_u64(&args[2..], "--cohort-limit", 978)? as usize;
+            let max_templates = flag_u64(&args[2..], "--max-templates", 100)? as usize;
+            let max_anchors = flag_u64(&args[2..], "--max-anchors-per-node", 64)? as usize;
+            let selected_keys = read_rep_keys(&keys_path)?;
+            let snapshot_id = unknotdb::util::sha256_hex(&std::fs::read(&input)?);
+            let cold = SqliteSnapshot::open_file(&input)?;
+            if cold.schema_version()? < 3 {
+                return Err("anchored-template improvement requires schema version 3".into());
+            }
+            let mut stmt = cold.connection().prepare(
+                "SELECT p.program_id,count(*),p.program \
+                 FROM programs p JOIN edges e ON e.program_id=p.program_id \
+                 GROUP BY p.program_id HAVING min(e.cc_cost)=1 AND max(e.cc_cost)=1 \
+                 ORDER BY count(*) DESC,p.program_id ASC LIMIT ?1",
+            )?;
+            let templates = stmt
+                .query_map([i64::try_from(max_templates)?], |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, Vec<u8>>(2)?,
+                    ))
+                })?
+                .map(|row| -> Result<AnchoredTemplateProposal> {
+                    let (id, uses, blob) = row?;
+                    Ok(AnchoredTemplateProposal {
+                        template_id: id.try_into()?,
+                        uses: uses.try_into()?,
+                        program: CheckpointedProofProgram::decode(&blob)?,
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?;
+            drop(stmt);
+            drop(cold);
+            let (mut population, mut meta) = PopulationGraph::from_snapshot(&input)?;
+            let run = improve_high_u_with_templates(
+                &mut population,
+                &templates,
+                &snapshot_id,
+                &selected_keys,
+                HighUTemplateLimits {
+                    min_u,
+                    cohort_limit,
+                    max_templates,
+                    max_anchors_per_node: max_anchors,
+                },
+            )?;
+            let (nodes, edges) = population.into_snapshot_records()?;
+            meta.source_generation = format!(
+                "high-u-anchored-template-v0-from-{}",
+                meta.source_generation
+            );
+            write_snapshot_atomic(&output, &meta, nodes, edges)?;
+            write_text_atomic(&manifest, &run.manifest)?;
+            validate_published_snapshot(&output)?;
+            verify_key_superset(&input, &output)?;
+            println!(
+                "high-U template snapshot: {} selected={} improved={} bindings={} legal={} hits={} edges+={}",
+                output.display(), run.selected, run.improved, run.evaluated_bindings,
+                run.legal_bindings, run.exact_graph_hits, run.inserted_edges,
+            );
+        }
+        "import-rf-best" => {
+            let oracle_index = args
+                .iter()
+                .position(|arg| arg == "--oracle")
+                .ok_or("import-rf-best needs --oracle <program> [arguments...]")?;
+            let command_args = &args[..oracle_index];
+            let input = command_args
+                .get(1)
+                .map(PathBuf::from)
+                .ok_or("import-rf-best needs an input snapshot")?;
+            let output = command_args
+                .get(2)
+                .map(PathBuf::from)
+                .ok_or("import-rf-best needs an output snapshot")?;
+            let corpus_path = flag_path(command_args, "--corpus")?;
+            let best_path = flag_path(command_args, "--best")?;
+            let manifest = flag_path(command_args, "--manifest")?;
+            ensure_new_outputs(&input, &[&output, &manifest])?;
+            let policy_limits = PolicyLimits {
+                max_policy_plies: flag_u64(command_args, "--max-policy-plies", 128)?
+                    .try_into()
+                    .map_err(|_| "--max-policy-plies must fit u32")?,
+                max_semantic_moves: flag_u64(command_args, "--max-semantic-moves", 32)?
+                    .try_into()
+                    .map_err(|_| "--max-semantic-moves must fit u32")?,
+            };
+            let oracle_program = args
+                .get(oracle_index + 1)
+                .ok_or("--oracle needs a program")?;
+            let oracle_args = &args[oracle_index + 2..];
+            let snapshot_id = unknotdb::util::sha256_hex(&std::fs::read(&input)?);
+            let corpus = read_rf_corpus_tsv(&corpus_path)?;
+            let mut traces = read_best_trace_tsv(&best_path)?;
+            if let Some(representation_id) =
+                optional_flag_string(command_args, "--only-representation-id")?
+            {
+                traces.retain(|trace| trace.representation_id() == representation_id);
+                if traces.is_empty() {
+                    return Err(format!(
+                        "RF best-witness file has no trace for `{representation_id}`"
+                    )
+                    .into());
+                }
+            }
+            let (mut population, parent_meta) = PopulationGraph::from_snapshot(&input)?;
+            let mut oracle = ExternalPolicyOracle::spawn(Path::new(oracle_program), oracle_args)?;
+            if parent_meta.policy_model_id.as_deref() != Some(oracle.model_id()) {
+                return Err("snapshot and RF best-trace oracle model IDs differ".into());
+            }
+            let run = import_best_traces(
+                &mut population,
+                &corpus,
+                &traces,
+                &mut oracle,
+                &snapshot_id,
+                policy_limits,
+            )?;
+            let (nodes, edges) = population.into_snapshot_records()?;
+            let meta = SnapshotMeta::braid_mirror_orbit_v1(
+                format!("rf-best-traces-v0-from-{}", parent_meta.source_generation),
+                oracle.model_id(),
+            );
+            write_snapshot_atomic(&output, &meta, nodes, edges)?;
+            write_text_atomic(&manifest, &run.manifest)?;
+            validate_published_snapshot(&output)?;
+            verify_key_superset(&input, &output)?;
+            println!(
+                "RF best-trace snapshot: {} selected={} covered={} imported={} improved={} failed={} nodes+={} edges+={}",
+                output.display(), run.selected, run.initially_covered, run.imported,
+                run.improved, run.failed, run.inserted_nodes, run.inserted_edges,
+            );
+        }
+        "import-rf-descending" => {
+            let oracle_index = args
+                .iter()
+                .position(|arg| arg == "--oracle")
+                .ok_or("import-rf-descending needs --oracle <program> [arguments...]")?;
+            let command_args = &args[..oracle_index];
+            let input = command_args
+                .get(1)
+                .map(PathBuf::from)
+                .ok_or("import-rf-descending needs an input snapshot")?;
+            let output = command_args
+                .get(2)
+                .map(PathBuf::from)
+                .ok_or("import-rf-descending needs an output snapshot")?;
+            let corpus_path = flag_path(command_args, "--corpus")?;
+            let manifest = flag_path(command_args, "--manifest")?;
+            ensure_new_outputs(&input, &[&output, &manifest])?;
+            let skip = flag_u64(command_args, "--skip", 0)? as usize;
+            let limit = flag_u64(command_args, "--limit", u64::MAX)? as usize;
+            let policy_limits = PolicyLimits {
+                max_policy_plies: flag_u64(command_args, "--max-policy-plies", 128)?
+                    .try_into()
+                    .map_err(|_| "--max-policy-plies must fit u32")?,
+                max_semantic_moves: flag_u64(command_args, "--max-semantic-moves", 32)?
+                    .try_into()
+                    .map_err(|_| "--max-semantic-moves must fit u32")?,
+            };
+            let oracle_program = args
+                .get(oracle_index + 1)
+                .ok_or("--oracle needs a program")?;
+            let oracle_args = &args[oracle_index + 2..];
+            let snapshot_id = unknotdb::util::sha256_hex(&std::fs::read(&input)?);
+            let corpus = read_rf_corpus_tsv(&corpus_path)?;
+            let (mut population, parent_meta) = PopulationGraph::from_snapshot(&input)?;
+            let mut oracle = ExternalPolicyOracle::spawn(Path::new(oracle_program), oracle_args)?;
+            if parent_meta.policy_model_id.as_deref() != Some(oracle.model_id()) {
+                return Err("snapshot and RF descending oracle model IDs differ".into());
+            }
+            let run = import_descending_corpus(
+                &mut population,
+                &corpus,
+                &mut oracle,
+                &snapshot_id,
+                policy_limits,
+                skip,
+                limit,
+            )?;
+            let (nodes, edges) = population.into_snapshot_records()?;
+            let meta = SnapshotMeta::braid_mirror_orbit_v1(
+                format!("rf-descending-v0-from-{}", parent_meta.source_generation),
+                oracle.model_id(),
+            );
+            write_snapshot_atomic(&output, &meta, nodes, edges)?;
+            write_text_atomic(&manifest, &run.manifest)?;
+            validate_published_snapshot(&output)?;
+            verify_key_superset(&input, &output)?;
+            println!(
+                "RF descending snapshot: {} selected={} covered={} imported={} failed={} nodes+={} edges+={}",
+                output.display(), run.selected, run.initially_covered, run.imported,
+                run.failed, run.inserted_nodes, run.inserted_edges,
+            );
+        }
+        "import-planar-u1" => {
+            let oracle_index = args
+                .iter()
+                .position(|arg| arg == "--oracle")
+                .ok_or("import-planar-u1 needs --oracle <program> [arguments...]")?;
+            let command_args = &args[..oracle_index];
+            let input = command_args
+                .get(1)
+                .map(PathBuf::from)
+                .ok_or("import-planar-u1 needs an input snapshot")?;
+            let output = command_args
+                .get(2)
+                .map(PathBuf::from)
+                .ok_or("import-planar-u1 needs an output snapshot")?;
+            let manifest = flag_path(command_args, "--manifest")?;
+            let certificate_path = flag_path(command_args, "--certificate")?;
+            ensure_new_outputs(&input, &[&output, &manifest])?;
+            let source_key = parse_rep_key(&flag_string(command_args, "--source-key")?)?;
+            let crossing_position: u32 = flag_u64(command_args, "--cc-position", u64::MAX)?
+                .try_into()
+                .map_err(|_| "--cc-position must fit u32")?;
+            let policy_limits = PolicyLimits {
+                max_policy_plies: flag_u64(command_args, "--max-policy-plies", 128)?
+                    .try_into()
+                    .map_err(|_| "--max-policy-plies must fit u32")?,
+                max_semantic_moves: flag_u64(command_args, "--max-semantic-moves", 32)?
+                    .try_into()
+                    .map_err(|_| "--max-semantic-moves must fit u32")?,
+            };
+            let oracle_program = args
+                .get(oracle_index + 1)
+                .ok_or("--oracle needs a program")?;
+            let oracle_args = &args[oracle_index + 2..];
+            let snapshot_id = unknotdb::util::sha256_hex(&std::fs::read(&input)?);
+            let certificate = std::fs::read(&certificate_path)?;
+            let (mut population, parent_meta) = PopulationGraph::from_snapshot(&input)?;
+            let mut oracle = ExternalPolicyOracle::spawn(Path::new(oracle_program), oracle_args)?;
+            if parent_meta.policy_model_id.as_deref() != Some(oracle.model_id()) {
+                return Err("snapshot and planar-import oracle model IDs differ".into());
+            }
+            let run = import_planar_u1(
+                &mut population,
+                source_key,
+                crossing_position,
+                certificate,
+                &mut oracle,
+                policy_limits,
+                &snapshot_id,
+            )?;
+            let (nodes, edges) = population.into_snapshot_records()?;
+            let meta = SnapshotMeta::braid_mirror_orbit_v1(
+                format!("planar-riii-v0-from-{}", parent_meta.source_generation),
+                oracle.model_id(),
+            );
+            write_snapshot_atomic(&output, &meta, nodes, edges)?;
+            write_text_atomic(&manifest, &run.manifest)?;
+            validate_published_snapshot(&output)?;
+            verify_key_superset(&input, &output)?;
+            println!(
+                "planar U1 snapshot: {} old_u={} new_u={} nodes+={} edges+={} certificate={}",
+                output.display(),
+                run.old_u,
+                run.new_u,
+                run.inserted_nodes,
+                run.inserted_edges,
+                hex(&run.certificate_id),
+            );
+        }
+        "import-catalogue-planar" => {
+            let oracle_index = args
+                .iter()
+                .position(|arg| arg == "--oracle")
+                .ok_or("import-catalogue-planar needs --oracle <program> [arguments...]")?;
+            let command_args = &args[..oracle_index];
+            let input = command_args
+                .get(1)
+                .map(PathBuf::from)
+                .ok_or("import-catalogue-planar needs an input snapshot")?;
+            let output = command_args
+                .get(2)
+                .map(PathBuf::from)
+                .ok_or("import-catalogue-planar needs an output snapshot")?;
+            let manifest = flag_path(command_args, "--manifest")?;
+            let corpus_paths: Vec<PathBuf> = command_args
+                .windows(2)
+                .filter(|pair| pair[0] == "--corpus")
+                .map(|pair| PathBuf::from(&pair[1]))
+                .collect();
+            if corpus_paths.is_empty() {
+                return Err("import-catalogue-planar needs at least one --corpus".into());
+            }
+            ensure_new_outputs(&input, &[&output, &manifest])?;
+            let policy_limits = PolicyLimits {
+                max_policy_plies: flag_u64(command_args, "--max-policy-plies", 128)?
+                    .try_into()
+                    .map_err(|_| "--max-policy-plies must fit u32")?,
+                max_semantic_moves: flag_u64(command_args, "--max-semantic-moves", 32)?
+                    .try_into()
+                    .map_err(|_| "--max-semantic-moves must fit u32")?,
+            };
+            let oracle_program = args
+                .get(oracle_index + 1)
+                .ok_or("--oracle needs a program")?;
+            let oracle_args = &args[oracle_index + 2..];
+            let snapshot_id = unknotdb::util::sha256_hex(&std::fs::read(&input)?);
+            let corpus_storage: Vec<(String, Vec<u8>)> = corpus_paths
+                .iter()
+                .map(|path| -> Result<_> { Ok((path.display().to_string(), std::fs::read(path)?)) })
+                .collect::<Result<_>>()?;
+            let corpus_refs: Vec<(&str, &[u8])> = corpus_storage
+                .iter()
+                .map(|(name, bytes)| (name.as_str(), bytes.as_slice()))
+                .collect();
+            let (mut population, parent_meta) = PopulationGraph::from_snapshot(&input)?;
+            let mut oracle = ExternalPolicyOracle::spawn(Path::new(oracle_program), oracle_args)?;
+            if parent_meta.policy_model_id.as_deref() != Some(oracle.model_id()) {
+                return Err("snapshot and catalogue-planar oracle model IDs differ".into());
+            }
+            let run = import_catalogue_planar(
+                &mut population,
+                &corpus_refs,
+                &mut oracle,
+                policy_limits,
+                &snapshot_id,
+            )?;
+            let (nodes, edges) = population.into_snapshot_records()?;
+            let meta = SnapshotMeta::braid_mirror_orbit_v1(
+                format!(
+                    "catalogue-planar-chain-v0-from-{}",
+                    parent_meta.source_generation
+                ),
+                oracle.model_id(),
+            );
+            write_snapshot_atomic(&output, &meta, nodes, edges)?;
+            write_text_atomic(&manifest, &run.manifest)?;
+            validate_published_snapshot(&output)?;
+            verify_key_superset(&input, &output)?;
+            println!(
+                "catalogue planar snapshot: {} corpus={} witnesses={} candidates={} improved={} already={} absent={} failed={} direct={} collateral={} nodes+={} edges+={} certificates+={}",
+                output.display(), run.corpus_entries, run.witness_entries,
+                run.strict_candidates, run.improved, run.already_sufficient,
+                run.absent_sources, run.failed, run.direct_improvements,
+                run.collateral_improvements, run.inserted_nodes, run.inserted_edges,
+                run.inserted_certificates,
+            );
+        }
+        "descending-backfill" => {
+            let oracle_index = args
+                .iter()
+                .position(|arg| arg == "--oracle")
+                .ok_or("descending-backfill needs --oracle <program> [arguments...]")?;
+            let command_args = &args[..oracle_index];
+            let input = command_args
+                .get(1)
+                .map(PathBuf::from)
+                .ok_or("descending-backfill needs an input snapshot")?;
+            let output = command_args
+                .get(2)
+                .map(PathBuf::from)
+                .ok_or("descending-backfill needs an output snapshot")?;
+            let manifest = flag_path(command_args, "--manifest")?;
+            ensure_new_outputs(&input, &[&output, &manifest])?;
+            let limits = DescendingBackfillLimits {
+                min_u: flag_u64(command_args, "--min-u", 1850)?
+                    .try_into()
+                    .map_err(|_| "--min-u must fit u32")?,
+                cohort_limit: flag_u64(command_args, "--cohort-limit", 64)? as usize,
+                max_word_length: flag_u64(command_args, "--max-word-length", 96)?
+                    .try_into()
+                    .map_err(|_| "--max-word-length must fit u32")?,
+                full_recompute_threshold: flag_u64(command_args, "--full-recompute-threshold", 16)?
+                    as usize,
+                policy_limits: PolicyLimits {
+                    max_policy_plies: flag_u64(command_args, "--max-policy-plies", 128)?
+                        .try_into()
+                        .map_err(|_| "--max-policy-plies must fit u32")?,
+                    max_semantic_moves: flag_u64(command_args, "--max-semantic-moves", 32)?
+                        .try_into()
+                        .map_err(|_| "--max-semantic-moves must fit u32")?,
+                },
+            };
+            let only_key = optional_flag_string(command_args, "--key")?
+                .map(|value| parse_rep_key(&value))
+                .transpose()?;
+            let keys_file = optional_flag_string(command_args, "--keys-file")?;
+            if only_key.is_some() && keys_file.is_some() {
+                return Err("use only one of --key and --keys-file".into());
+            }
+            let selected_keys = if let Some(key) = only_key {
+                Some(vec![key])
+            } else if let Some(path) = keys_file {
+                Some(read_rep_keys(Path::new(&path))?)
+            } else {
+                None
+            };
+            let oracle_program = args
+                .get(oracle_index + 1)
+                .ok_or("--oracle needs a program")?;
+            let oracle_args = &args[oracle_index + 2..];
+            let snapshot_id = unknotdb::util::sha256_hex(&std::fs::read(&input)?);
+            let (mut population, parent_meta) = PopulationGraph::from_snapshot(&input)?;
+            let mut oracle = ExternalPolicyOracle::spawn(Path::new(oracle_program), oracle_args)?;
+            if parent_meta.policy_model_id.as_deref() != Some(oracle.model_id()) {
+                return Err("snapshot and descending oracle model IDs differ".into());
+            }
+            let run = run_descending_backfill(
+                &mut population,
+                &mut oracle,
+                &snapshot_id,
+                limits,
+                selected_keys.as_deref(),
+            )?;
+            let (nodes, edges) = population.into_snapshot_records()?;
+            let meta = SnapshotMeta::braid_mirror_orbit_v1(
+                format!("descending-artin-v0-from-{}", parent_meta.source_generation),
+                oracle.model_id(),
+            );
+            write_snapshot_atomic(&output, &meta, nodes, edges)?;
+            write_text_atomic(&manifest, &run.manifest)?;
+            validate_published_snapshot(&output)?;
+            verify_key_superset(&input, &output)?;
+            println!(
+                "descending snapshot: {} selected={} certified={} excluded={} failed={} direct={} collateral={} nodes+={} edges+={}",
+                output.display(), run.selected, run.certified, run.excluded, run.failed,
+                run.direct_improvements, run.collateral_improvements,
+                run.inserted_nodes, run.inserted_edges,
+            );
+        }
         "report-acs10" => {
             let snapshot = positional_path(&args)?;
             let report = flag_path(&args[1..], "--report")?;
@@ -1161,6 +1829,164 @@ fn run() -> Result<()> {
                 output.display(),
                 bytes as f64 / (1024.0 * 1024.0)
             );
+        }
+        "migrate-policy-adapter-v4" => {
+            let input = args
+                .get(1)
+                .map(PathBuf::from)
+                .ok_or("migrate-policy-adapter-v4 needs an input snapshot")?;
+            let output = args
+                .get(2)
+                .map(PathBuf::from)
+                .ok_or("migrate-policy-adapter-v4 needs an output snapshot")?;
+            let manifest = flag_path(&args, "--manifest")?;
+            ensure_new_outputs(&input, &[&output, &manifest])?;
+            let snapshot_id = unknotdb::util::sha256_hex(&std::fs::read(&input)?);
+            let (mut population, parent_meta) = PopulationGraph::from_snapshot(&input)?;
+            let old_adapter = parent_meta
+                .policy_adapter_version
+                .as_deref()
+                .ok_or("parent snapshot has no policy adapter")?;
+            if old_adapter
+                != "initial-reducer-clean-controller-top1-self-loop-skip4-mirror-orbit-v3"
+            {
+                return Err("conservative migration requires the exact v3 parent adapter".into());
+            }
+            let (terminal, preferred_cc) =
+                population.migrate_conservative_policy_adapter(old_adapter, POLICY_ADAPTER_VERSION);
+            let model_id = parent_meta
+                .policy_model_id
+                .as_deref()
+                .ok_or("parent snapshot has no policy model")?;
+            let (nodes, edges) = population.into_snapshot_records()?;
+            let node_count = nodes.len();
+            let edge_count = edges.len();
+            let meta = SnapshotMeta::braid_mirror_orbit_v1(
+                format!(
+                    "policy-adapter-v4-conservative-migration-from-{}",
+                    snapshot_id
+                ),
+                model_id,
+            );
+            write_snapshot_atomic(&output, &meta, nodes, edges)?;
+            validate_published_snapshot(&output)?;
+            verify_key_superset(&input, &output)?;
+            let body = format!(
+                "unknotdb-policy-adapter-migration-v0\nparent_snapshot_sha256\t{}\nold_adapter\t{}\nnew_adapter\t{}\nproof_rule\tnew adapter differs only after a controller cycle; stored v3 graph nodes are exclusively terminal or preferred-CC stops, so that branch is unreachable\nnodes\t{}\nterminal_reattested\t{}\npreferred_cc_reattested\t{}\nedges_replayed\t{}\n",
+                snapshot_id,
+                old_adapter,
+                POLICY_ADAPTER_VERSION,
+                node_count,
+                terminal,
+                preferred_cc,
+                edge_count,
+            );
+            write_text_atomic(&manifest, &body)?;
+            println!(
+                "policy adapter v4 snapshot: {} nodes={} terminal={} preferred_cc={} edges={}",
+                output.display(),
+                node_count,
+                terminal,
+                preferred_cc,
+                edge_count
+            );
+        }
+        "report-program-templates" => {
+            let snapshot = args
+                .get(1)
+                .map(PathBuf::from)
+                .ok_or("report-program-templates needs a snapshot path")?;
+            let report = flag_path(&args[1..], "--report")?;
+            if report.exists() {
+                return Err(format!("template report already exists: {}", report.display()).into());
+            }
+            let limit = flag_u64(&args[1..], "--limit", 100)?;
+            let cold = SqliteSnapshot::open_file(&snapshot)?;
+            if cold.schema_version()? < 3 {
+                return Err("program templates require schema version 3".into());
+            }
+            let mut text = String::from(
+                "template_id\tuses\tdistinct_anchors\tmin_anchor_x\tmax_anchor_x\tmin_anchor_y\tmax_anchor_y\tcc_cost\tinstructions\texample_edge\tsha256\ttemplate\n",
+            );
+            let mut stmt = cold.connection().prepare(
+                "SELECT p.program_id,count(*),\
+                        count(DISTINCT printf('%u:%u',e.program_anchor_x,e.program_anchor_y)),\
+                        min(e.program_anchor_x),max(e.program_anchor_x),\
+                        min(e.program_anchor_y),max(e.program_anchor_y),\
+                        min(e.cc_cost),length(p.program),min(e.edge_id),\
+                        lower(hex(p.program_sha256)),p.program \
+                 FROM programs p JOIN edges e ON e.program_id=p.program_id \
+                 GROUP BY p.program_id \
+                 ORDER BY count(*) DESC,p.program_id ASC LIMIT ?1",
+            )?;
+            let rows = stmt.query_map([i64::try_from(limit)?], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, i64>(4)?,
+                    row.get::<_, i64>(5)?,
+                    row.get::<_, i64>(6)?,
+                    row.get::<_, i64>(7)?,
+                    row.get::<_, i64>(8)?,
+                    row.get::<_, i64>(9)?,
+                    row.get::<_, String>(10)?,
+                    row.get::<_, Vec<u8>>(11)?,
+                ))
+            })?;
+            for row in rows {
+                let (id, uses, anchors, min_x, max_x, min_y, max_y, cc, bytes, example, sha, blob) =
+                    row?;
+                let template = CheckpointedProofProgram::decode(&blob)?;
+                let instructions = bytes.saturating_sub(12) / 8;
+                let description = format!("{:?}", template.instructions)
+                    .replace('\t', " ")
+                    .replace('\n', " ");
+                text.push_str(&format!(
+                    "{id}\t{uses}\t{anchors}\t{min_x}\t{max_x}\t{min_y}\t{max_y}\t{cc}\t{instructions}\t{example}\t{sha}\t{description}\n"
+                ));
+            }
+            write_text_atomic(&report, &text)?;
+            println!("published program-template report: {}", report.display());
+        }
+        "program-template-occurrences" => {
+            let snapshot = args
+                .get(1)
+                .map(PathBuf::from)
+                .ok_or("program-template-occurrences needs a snapshot path")?;
+            let template_id: u32 = args
+                .get(2)
+                .ok_or("program-template-occurrences needs a template id")?
+                .parse()?;
+            let limit = flag_u64(&args[2..], "--limit", 100)?;
+            let cold = SqliteSnapshot::open_file(&snapshot)?;
+            if cold.schema_version()? < 3 {
+                return Err("program templates require schema version 3".into());
+            }
+            println!(
+                "edge_id\tsource_node\ttarget_node\tanchor_x\tanchor_y\tcc_cost\tfirst_action"
+            );
+            let mut stmt = cold.connection().prepare(
+                "SELECT edge_id,source_node,target_node,program_anchor_x,program_anchor_y,\
+                        cc_cost,first_action FROM edges WHERE program_id=?1 \
+                 ORDER BY edge_id LIMIT ?2",
+            )?;
+            let rows = stmt.query_map([i64::from(template_id), i64::try_from(limit)?], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, i64>(4)?,
+                    row.get::<_, i64>(5)?,
+                    row.get::<_, i64>(6)?,
+                ))
+            })?;
+            for row in rows {
+                let (edge, source, target, x, y, cc, first) = row?;
+                println!("{edge}\t{source}\t{target}\t{x}\t{y}\t{cc}\t{first}");
+            }
         }
         "inspect" => {
             let path = positional_path(&args)?;
@@ -1946,6 +2772,52 @@ fn optional_flag_string(args: &[String], flag: &str) -> Result<Option<String>> {
                 .ok_or_else(|| format!("{flag} needs a value").into())
         })
         .transpose()
+}
+
+fn parse_rep_key(value: &str) -> Result<RepKey> {
+    if value.len() != 64 {
+        return Err("representation key must contain 64 hex characters".into());
+    }
+    let mut key = [0_u8; 32];
+    for (index, pair) in value.as_bytes().chunks_exact(2).enumerate() {
+        let pair = std::str::from_utf8(pair)?;
+        key[index] = u8::from_str_radix(pair, 16)
+            .map_err(|_| "representation key contains non-hex characters")?;
+    }
+    Ok(key)
+}
+
+fn read_rep_keys(path: &Path) -> Result<Vec<RepKey>> {
+    let contents = std::fs::read_to_string(path)?;
+    let audit_mode = contents.lines().any(|line| line.starts_with("audit\t"));
+    let mut keys = Vec::new();
+    for (line_index, line) in contents.lines().enumerate() {
+        let value = line.trim();
+        if value.is_empty() || value.starts_with('#') {
+            continue;
+        }
+        let fields: Vec<_> = value.split('\t').collect();
+        if audit_mode {
+            if fields.first() == Some(&"audit")
+                && fields.len() >= 7
+                && fields[1] != "representation_id"
+                && fields[5] == "1"
+            {
+                keys.push(parse_rep_key(fields[4]).map_err(|error| {
+                    format!("{} line {}: {}", path.display(), line_index + 1, error)
+                })?);
+            }
+            continue;
+        }
+        keys.push(
+            parse_rep_key(value).map_err(|error| {
+                format!("{} line {}: {}", path.display(), line_index + 1, error)
+            })?,
+        );
+    }
+    keys.sort_unstable();
+    keys.dedup();
+    Ok(keys)
 }
 
 fn splitmix64(mut x: u64) -> u64 {

@@ -66,6 +66,36 @@ $BIN bench-population /tmp/unknotdb.sqlite \
   --duplicate-rounds 10 --refresh-rounds 10 --rebuild-rounds 1
 ```
 
+Planar RI/RII/RIII certificates are imported as content-addressed cold
+sidecars.  A certificate edge uses the versioned
+`PlanarCertificateCollapse` instruction and is accepted only when the Rust
+validator reconstructs the ordinary braid closure, replays every labelled
+local move and checkpoint, and reaches one empty unknot component.  The
+preceding crossing change and mandatory preprocessing remain an ordinary
+one-CC proof edge:
+
+```bash
+$BIN import-planar-u1 input.sqlite output.sqlite \
+  --source-key HEX --cc-position N --certificate trace.json \
+  --manifest import.tsv --oracle /path/to/python tools/q_policy_oracle.py \
+  --pgx-root /path/to/pgx-mcts-bench \
+  --model-dir models/q-grown-raster-axial-12-q254-frozen-20260824-v0
+```
+
+For fixed catalogue witness corpora, `import-catalogue-planar` splits every
+multi-CC witness into one-CC graph edges.  After each CC it runs the pinned
+preprocessor and stores only the normalized stopping point.  The following
+edge exactly reverses that preprocessing before applying the next recorded CC,
+so crossing coordinates retain their original certificate meaning:
+
+```bash
+$BIN import-catalogue-planar input.sqlite output.sqlite \
+  --corpus stage1.json --corpus stage2.json --manifest import.tsv \
+  --oracle /path/to/python tools/q_policy_oracle.py \
+  --pgx-root /path/to/pgx-mcts-bench \
+  --model-dir models/q-grown-raster-axial-12-q254-frozen-20260824-v0
+```
+
 Synthetic edges exercise storage invariants only and are explicitly marked
 non-proofs. `preprocess-braid` is inference-only: the Python process chooses
 top-1 policy actions from the hash-pinned frozen checkpoint, while Rust enforces

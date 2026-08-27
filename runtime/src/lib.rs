@@ -15,14 +15,20 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub mod campaign;
+pub mod catalogue_planar_import;
 pub mod census;
+pub mod descending;
 pub mod expansion;
 pub mod frontier;
+pub mod high_u;
 pub mod optimizer;
+pub mod planar;
+pub mod planar_import;
 pub mod policy;
 pub mod population;
 pub mod reducer;
 pub mod representation;
+pub mod rf_import;
 pub mod targeted;
 
 pub type Result<T> = std::result::Result<T, Box<dyn Error + Send + Sync>>;
@@ -30,7 +36,7 @@ pub type RepKey = [u8; 32];
 pub type NodeId = u32;
 pub type EdgeId = u32;
 
-pub const SCHEMA_VERSION: u32 = 2;
+pub const SCHEMA_VERSION: u32 = 3;
 pub const ROLE_CORE: u8 = 1;
 pub const ROLE_L10_AUX: u8 = 2;
 pub const ROLE_L1000_AUX: u8 = 4;
@@ -74,7 +80,7 @@ FROM nodes ORDER BY node_id
 
 const SCHEMA_SQL: &str = r#"
 PRAGMA application_id = 1430996034;
-PRAGMA user_version = 2;
+PRAGMA user_version = 3;
 
 CREATE TABLE meta (
     key   TEXT PRIMARY KEY,
@@ -139,6 +145,15 @@ CREATE TABLE programs (
     program_sha256      BLOB NOT NULL CHECK(length(program_sha256) = 32)
 );
 
+-- Optional cold proof sidecars. The primary key is SHA-256(certificate).
+-- Legacy certificate_id annotations need not have a row; the planar macro
+-- requires one and is rejected without it.
+CREATE TABLE planar_certificates (
+    certificate_id      BLOB PRIMARY KEY CHECK(length(certificate_id) = 32),
+    certificate_version INTEGER NOT NULL CHECK(certificate_version >= 0),
+    certificate         BLOB NOT NULL
+) WITHOUT ROWID;
+
 CREATE TABLE edges (
     edge_id             INTEGER PRIMARY KEY CHECK(edge_id >= 0),
     source_node         INTEGER NOT NULL,
@@ -146,6 +161,8 @@ CREATE TABLE edges (
     cc_cost             INTEGER NOT NULL CHECK(cc_cost BETWEEN 0 AND 1),
     first_action        INTEGER NOT NULL CHECK(first_action >= 0),
     program_id          INTEGER NOT NULL,
+    program_anchor_x    INTEGER NOT NULL CHECK(program_anchor_x BETWEEN 0 AND 65535),
+    program_anchor_y    INTEGER NOT NULL CHECK(program_anchor_y BETWEEN 0 AND 4294967295),
     certificate_id      BLOB CHECK(certificate_id IS NULL OR length(certificate_id) = 32),
     FOREIGN KEY(program_id) REFERENCES programs(program_id),
     FOREIGN KEY(source_node) REFERENCES nodes(node_id),
@@ -154,6 +171,7 @@ CREATE TABLE edges (
 
 CREATE INDEX edges_by_source ON edges(source_node);
 CREATE INDEX edges_by_target ON edges(target_node);
+CREATE INDEX edges_by_program ON edges(program_id);
 "#;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -326,6 +344,7 @@ pub struct EdgeRecord {
     pub program_version: u32,
     pub program: Vec<u8>,
     pub certificate_id: Option<RepKey>,
+    pub certificate: Option<Vec<u8>>,
     pub validator_version: String,
 }
 
@@ -649,6 +668,20 @@ impl SqliteSnapshot {
                 }
             }
         }
+        if table_exists(&self.conn, "planar_certificates")? {
+            let mut stmt = self.conn.prepare(
+                "SELECT certificate_id,certificate FROM planar_certificates ORDER BY certificate_id",
+            )?;
+            let rows = stmt.query_map([], |row| {
+                Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, Vec<u8>>(1)?))
+            })?;
+            for row in rows {
+                let (stated, certificate) = row?;
+                if stated.as_slice() != unknotdb::util::sha256(&certificate) {
+                    return Err("planar certificate hash mismatch".into());
+                }
+            }
+        }
         Ok(())
     }
 
@@ -658,14 +691,22 @@ impl SqliteSnapshot {
     pub fn verify_full_replay(&self) -> Result<usize> {
         let sql = if self.schema_version == 0 {
             "SELECT e.edge_id,e.cc_cost,e.first_action,e.program_version,e.program,\
-                    sr.encoding,tr.encoding \
+                    sr.encoding,tr.encoding,0,0,NULL \
              FROM edges e \
+             JOIN representations sr ON sr.node_id=e.source_node \
+             JOIN representations tr ON tr.node_id=e.target_node \
+             ORDER BY e.edge_id"
+        } else if self.schema_version < 3 {
+            "SELECT e.edge_id,e.cc_cost,e.first_action,p.program_version,p.program,\
+                    sr.encoding,tr.encoding,0,0,NULL \
+             FROM edges e JOIN programs p ON p.program_id=e.program_id \
              JOIN representations sr ON sr.node_id=e.source_node \
              JOIN representations tr ON tr.node_id=e.target_node \
              ORDER BY e.edge_id"
         } else {
             "SELECT e.edge_id,e.cc_cost,e.first_action,p.program_version,p.program,\
-                    sr.encoding,tr.encoding \
+                    sr.encoding,tr.encoding,e.program_anchor_x,e.program_anchor_y, \
+                    e.certificate_id \
              FROM edges e JOIN programs p ON p.program_id=e.program_id \
              JOIN representations sr ON sr.node_id=e.source_node \
              JOIN representations tr ON tr.node_id=e.target_node \
@@ -685,20 +726,77 @@ impl SqliteSnapshot {
                 row.get::<_, Vec<u8>>(4)?,
                 row.get::<_, Vec<u8>>(5)?,
                 row.get::<_, Vec<u8>>(6)?,
+                row.get::<_, i64>(7)?,
+                row.get::<_, i64>(8)?,
+                row.get::<_, Option<Vec<u8>>>(9)?,
             ))
         })?;
         let mut count = 0_usize;
         for row in rows {
-            let (edge_id, cc, first, version, program, source, target) = row?;
-            let source = representation::BraidRepresentation::decode_storage(&source)?.encode()?;
+            let (
+                edge_id,
+                cc,
+                first,
+                version,
+                program,
+                source,
+                target,
+                anchor_x,
+                anchor_y,
+                certificate_id,
+            ) = row?;
+            let source_representation =
+                representation::BraidRepresentation::decode_storage(&source)?;
+            let source = source_representation.encode()?;
             let target = representation::BraidRepresentation::decode_storage(&target)?.encode()?;
-            representation::verify_edge_program(
+            let program_version = u32_from_i64(version, "program_version")?;
+            let program = if self.schema_version >= 3
+                && program_version == representation::CheckpointedProofProgram::VERSION
+            {
+                let template = representation::CheckpointedProofProgram::decode(&program)?;
+                if template.contains_planar_certificate() {
+                    if anchor_x != 0 || anchor_y != 0 {
+                        return Err("planar certificate program has a non-zero anchor".into());
+                    }
+                    program
+                } else {
+                    representation::AnchoredProofProgram {
+                        template,
+                        anchor_x: u16::try_from(anchor_x)
+                            .map_err(|_| "program anchor_x does not fit u16")?,
+                        anchor_y: u32_from_i64(anchor_y, "program_anchor_y")?,
+                    }
+                    .materialize(&source_representation)?
+                    .encode()?
+                }
+            } else {
+                program
+            };
+            let certificate = certificate_id
+                .as_deref()
+                .map(|id| -> Result<Option<Vec<u8>>> {
+                    if !table_exists(&self.conn, "planar_certificates")? {
+                        return Ok(None);
+                    }
+                    Ok(self
+                        .conn
+                        .query_row(
+                            "SELECT certificate FROM planar_certificates WHERE certificate_id=?1",
+                            [id],
+                            |row| row.get(0),
+                        )
+                        .optional()?)
+                })
+                .transpose()?
+                .flatten();
+            representation::verify_edge_program_with_certificate(
                 &source,
                 &target,
                 &program,
-                u32_from_i64(version, "program_version")?,
+                program_version,
                 u64_from_i64(first, "first_action")?,
                 u8_from_i64(cc, "cc_cost")?,
+                certificate.as_deref(),
             )
             .map_err(|error| format!("edge {} full replay failed: {}", edge_id, error))?;
             count += 1;
@@ -835,13 +933,39 @@ where
             let mut edge_stmt = conn.prepare_cached(
                 "INSERT INTO edges( \
                     edge_id, source_node, target_node, cc_cost, first_action, \
-                    program_id, certificate_id \
-                 ) VALUES (?1,?2,?3,?4,?5,?6,?7)",
+                    program_id, program_anchor_x, program_anchor_y, certificate_id \
+                 ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
             )?;
+            let mut certificate_stmt = conn.prepare_cached(
+                "INSERT OR IGNORE INTO planar_certificates( \
+                    certificate_id, certificate_version, certificate \
+                 ) VALUES (?1,0,?2)",
+            )?;
+            let mut source_rep_stmt =
+                conn.prepare_cached("SELECT encoding FROM representations WHERE node_id=?1")?;
             let mut program_ids: HashMap<u32, HashMap<Vec<u8>, u32>> = HashMap::new();
             let mut next_program_id = 0_u32;
             for edge in edges {
                 validate_edge_record(&edge)?;
+                if let Some(certificate) = edge.certificate.as_deref() {
+                    let certificate_id = unknotdb::util::sha256(certificate);
+                    if edge.certificate_id != Some(certificate_id) {
+                        return Err(format!(
+                            "edge {} certificate_id does not hash its sidecar",
+                            edge.edge_id
+                        )
+                        .into());
+                    }
+                    certificate_stmt.execute(params![certificate_id.as_slice(), certificate])?;
+                    let stored: Vec<u8> = conn.query_row(
+                        "SELECT certificate FROM planar_certificates WHERE certificate_id=?1",
+                        [certificate_id.as_slice()],
+                        |row| row.get(0),
+                    )?;
+                    if stored != certificate {
+                        return Err("planar certificate hash collision".into());
+                    }
+                }
                 validate_edge_for_meta(&conn, &edge, meta)?;
                 if edge.validator_version != meta.validator_version {
                     return Err(format!(
@@ -850,22 +974,51 @@ where
                     )
                     .into());
                 }
+                let (stored_program, anchor_x, anchor_y) = if meta.synthetic
+                    || edge.program_version != representation::CheckpointedProofProgram::VERSION
+                {
+                    (edge.program.clone(), 0_u16, 0_u32)
+                } else {
+                    let stored_source: Vec<u8> = source_rep_stmt
+                        .query_row([i64::from(edge.source_node)], |row| row.get(0))?;
+                    let source =
+                        representation::BraidRepresentation::decode_storage(&stored_source)?;
+                    let exact = representation::CheckpointedProofProgram::decode(&edge.program)?;
+                    if exact.contains_planar_certificate() {
+                        (edge.program.clone(), 0, 0)
+                    } else {
+                        let anchored = exact.anchor_template(&source)?;
+                        let materialized = anchored.materialize(&source)?.encode()?;
+                        if materialized != edge.program {
+                            return Err(format!(
+                                "edge {} anchored template changed its exact program",
+                                edge.edge_id
+                            )
+                            .into());
+                        }
+                        (
+                            anchored.template.encode()?,
+                            anchored.anchor_x,
+                            anchored.anchor_y,
+                        )
+                    }
+                };
                 let version_programs = program_ids.entry(edge.program_version).or_default();
-                let program_id = if let Some(id) = version_programs.get(&edge.program) {
+                let program_id = if let Some(id) = version_programs.get(&stored_program) {
                     *id
                 } else {
                     let id = next_program_id;
                     next_program_id = next_program_id
                         .checked_add(1)
                         .ok_or("too many distinct programs")?;
-                    let program_hash = unknotdb::util::sha256(&edge.program);
+                    let program_hash = unknotdb::util::sha256(&stored_program);
                     program_stmt.execute(params![
                         i64::from(id),
                         i64::from(edge.program_version),
-                        &edge.program,
+                        &stored_program,
                         program_hash.as_slice(),
                     ])?;
-                    version_programs.insert(edge.program.clone(), id);
+                    version_programs.insert(stored_program, id);
                     id
                 };
                 edge_stmt.execute(params![
@@ -875,6 +1028,8 @@ where
                     i64::from(edge.cc_cost),
                     i64_from_u64(edge.first_action)?,
                     i64::from(program_id),
+                    i64::from(anchor_x),
+                    i64::from(anchor_y),
                     edge.certificate_id.map(|v| v.to_vec()),
                 ])?;
             }
@@ -950,6 +1105,7 @@ pub fn synthetic_edges(count: u32) -> impl Iterator<Item = EdgeRecord> {
         program_version: 0,
         program: format!("SYNTHETIC-XC node={source}").into_bytes(),
         certificate_id: None,
+        certificate: None,
         validator_version: "synthetic-structural-only-v0".into(),
     })
 }
@@ -963,6 +1119,10 @@ fn insert_meta(conn: &Connection, meta: &SnapshotMeta) -> Result<()> {
         ("normalizer_version", meta.normalizer_version.clone()),
         ("representation_codec", meta.representation_codec.clone()),
         ("action_codec", meta.action_codec.clone()),
+        (
+            "program_binding_codec",
+            representation::ANCHORED_PROGRAM_CODEC.into(),
+        ),
         ("validator_version", meta.validator_version.clone()),
         ("source_generation", meta.source_generation.clone()),
         (
@@ -1058,6 +1218,17 @@ fn snapshot_schema_version(conn: &Connection) -> Result<u32> {
     Ok(value.parse()?)
 }
 
+fn table_exists(conn: &Connection, name: &str) -> Result<bool> {
+    Ok(conn
+        .query_row(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1",
+            [name],
+            |_| Ok(()),
+        )
+        .optional()?
+        .is_some())
+}
+
 fn optional_meta(value: &str) -> Option<String> {
     (value != "none").then(|| value.to_owned())
 }
@@ -1077,6 +1248,29 @@ fn validate_connection(conn: &Connection) -> Result<()> {
     validate_dense_ids(conn, "nodes", "node_id")?;
     validate_dense_ids(conn, "edges", "edge_id")?;
     let schema = snapshot_schema_version(conn)?;
+    if schema >= 3 {
+        let binding: String = conn.query_row(
+            "SELECT value FROM meta WHERE key='program_binding_codec'",
+            [],
+            |row| row.get(0),
+        )?;
+        if binding != representation::ANCHORED_PROGRAM_CODEC {
+            return Err(format!("unsupported program binding codec `{binding}`").into());
+        }
+    }
+    if table_exists(conn, "planar_certificates")? {
+        let orphan: Option<Vec<u8>> = conn
+            .query_row(
+                "SELECT c.certificate_id FROM planar_certificates c LEFT JOIN edges e \
+                 ON e.certificate_id=c.certificate_id WHERE e.edge_id IS NULL LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if orphan.is_some() {
+            return Err("planar certificate is not used by an edge".into());
+        }
+    }
     if schema >= 2 {
         let node_count = scalar_usize(conn, "SELECT count(*) FROM nodes")?;
         let key_count = scalar_usize(conn, "SELECT count(*) FROM node_keys")?;
@@ -1144,7 +1338,7 @@ fn validate_connection(conn: &Connection) -> Result<()> {
     if let Some(id) = bad_edge_range {
         return Err(format!("edge {} has a field outside the v0 integer range", id).into());
     }
-    if schema == 1 {
+    if schema >= 1 {
         validate_dense_ids(conn, "programs", "program_id")?;
         let missing_program: Option<i64> = conn
             .query_row(
@@ -1178,6 +1372,20 @@ fn validate_connection(conn: &Connection) -> Result<()> {
             .optional()?;
         if let Some(id) = duplicate_program {
             return Err(format!("program {} duplicates another dictionary entry", id).into());
+        }
+    }
+    if schema >= 3 {
+        let bad_anchor: Option<i64> = conn
+            .query_row(
+                "SELECT edge_id FROM edges WHERE program_anchor_x<0 OR \
+                 program_anchor_x>65535 OR program_anchor_y<0 OR \
+                 program_anchor_y>4294967295 LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if let Some(id) = bad_anchor {
+            return Err(format!("edge {} has an invalid program anchor", id).into());
         }
     }
 
@@ -1369,6 +1577,9 @@ fn validate_edge_record(edge: &EdgeRecord) -> Result<()> {
     if edge.validator_version.is_empty() {
         return Err(format!("edge {} has no validator version", edge.edge_id).into());
     }
+    if edge.certificate.is_some() && edge.certificate_id.is_none() {
+        return Err(format!("edge {} has a certificate without an id", edge.edge_id).into());
+    }
     Ok(())
 }
 
@@ -1483,13 +1694,14 @@ fn validate_edge_for_meta(conn: &Connection, edge: &EdgeRecord, meta: &SnapshotM
     let target =
         representation::BraidRepresentation::decode_storage(&load_encoding(edge.target_node)?)?
             .encode()?;
-    representation::verify_edge_program(
+    representation::verify_edge_program_with_certificate(
         &source,
         &target,
         &edge.program,
         edge.program_version,
         edge.first_action,
         edge.cc_cost,
+        edge.certificate.as_deref(),
     )
     .map_err(|error| -> Box<dyn Error + Send + Sync> {
         format!("edge {} replay failed: {}", edge.edge_id, error).into()
@@ -1732,7 +1944,7 @@ mod tests {
     }
 
     #[test]
-    fn schema_two_splits_keys_and_deduplicates_programs() {
+    fn schema_three_splits_keys_and_deduplicates_anchored_programs() {
         let path = test_path("program-dictionary");
         let nodes: Vec<_> = synthetic_nodes(3).collect();
         let mut edges: Vec<_> = synthetic_edges(3).collect();
@@ -1766,6 +1978,8 @@ mod tests {
         assert_eq!(programs, 1);
         assert_eq!(edges, 2);
         assert!(edge_columns.contains(&"program_id".into()));
+        assert!(edge_columns.contains(&"program_anchor_x".into()));
+        assert!(edge_columns.contains(&"program_anchor_y".into()));
         assert!(!edge_columns.contains(&"program".into()));
         assert!(!edge_columns.contains(&"program_sha256".into()));
         assert!(!edge_columns.contains(&"validator_version".into()));
@@ -1971,6 +2185,7 @@ mod tests {
             program_version: 0,
             program: program.encode().unwrap(),
             certificate_id: None,
+            certificate: None,
             validator_version: representation::VALIDATOR_VERSION.into(),
         };
         write_snapshot_atomic(&path, &production_meta(), nodes.clone(), [edge.clone()]).unwrap();

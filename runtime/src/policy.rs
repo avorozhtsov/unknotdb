@@ -17,9 +17,11 @@ use std::path::Path;
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 
 pub const POLICY_ADAPTER_VERSION: &str =
-    "initial-reducer-clean-controller-top1-self-loop-skip4-mirror-orbit-v3";
-pub const LEGACY_POLICY_ADAPTER_VERSIONS: &[&str] =
-    &["initial-reducer-clean-controller-top1-mirror-orbit-v2"];
+    "initial-reducer-clean-controller-acyclic-top1-self-loop-skip4-mirror-orbit-v4";
+pub const LEGACY_POLICY_ADAPTER_VERSIONS: &[&str] = &[
+    "initial-reducer-clean-controller-top1-self-loop-skip4-mirror-orbit-v3",
+    "initial-reducer-clean-controller-top1-mirror-orbit-v2",
+];
 
 pub fn is_supported_snapshot_adapter(version: &str) -> bool {
     version == POLICY_ADAPTER_VERSION || LEGACY_POLICY_ADAPTER_VERSIONS.contains(&version)
