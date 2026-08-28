@@ -100,10 +100,37 @@ snapshot-wide metadata. Schema v2 splits the key lookup from dense hot nodes and
 packs small braid alphabets at two letters per byte without changing canonical
 keys. The runtime reads legacy schemas v0/v1 and can rewrite them with
 `compact-snapshot INPUT OUTPUT` without rerunning the policy.
+Schema v4 adds a separate exact-checkpoint key domain for replayable raw proof
+vertices and a reducer-only Q254 capacity-fallback attestation. Canonical lookup
+continues to use mirror/origin orbit keys; raw checkpoints never silently merge
+with their mirrors.
 The production braid origin/key/action convention is normative in
 [`schema/graph-representation-v0.md`](schema/graph-representation-v0.md).
 The mandatory initial-only reducer and normalization-only policy transitions are specified in
 [`schema/preprocessing-v0.md`](schema/preprocessing-v0.md).
+
+## Coherent graph release bundle
+
+`v0.10.1` is the current coherent pre-release bundle on the path to public v1.
+It contains one immutable proof graph plus five sidecars:
+identification, invariant lookup, braid fingerprints, the federated
+KnotInfo/Brittenham catalogue, and provenance.  Every graph-dependent sidecar
+pins the exact SHA-256 of `proof.sqlite`; metadata never changes proof values.
+
+Download the access-controlled
+[Google Drive archive](https://drive.google.com/file/d/17Oc02uP1m_HREjN0Q85JvNi4zvntHEfJ/view?usp=drivesdk)
+(`56,577,912` bytes, SHA-256
+`b997f0ee9d7fdeab95f6a934a2892aefc2dae94bce76c5f5389574b5d8a48283`).
+
+```bash
+cd release-v0.10.1
+shasum -a 256 -c SHA256SUMS
+../runtime/target/release/unknotdb-runtime validate proof.sqlite
+```
+
+The full release gate and B4 regression metrics are under `reports/`. The CLI
+defaults below resolve this bundle. The release archive and extracted database
+bundle are generated artifacts and are not committed to Git.
 
 ## Invariant lookup CLI
 
@@ -160,6 +187,28 @@ verified or attested evidence before promotion.
 The separate braid-fingerprint sidecar records `scope`, `valid_under`, and
 `safe_use` for every value. Its reverse postings support candidate generation
 and ranking; they are never interpreted as general knot invariants or proofs.
+
+## Federated catalogue and CC adjacency
+
+`tools/build_federated_catalogue.py` imports a hash-pinned KnotInfo snapshot
+into a separate searchable layer.  The proof graph remains small: public DT,
+Gauss, PD and braid representations are aliases until a replay-validated route
+actually connects a normalized stopping point.
+
+```bash
+tools/unknotdb_cli.py knot-show 12n_570
+tools/unknotdb_cli.py resolve-identifier K12n570 --scheme spherogram
+tools/unknotdb_cli.py resolve-representation dt '[4, 6, 2]'
+tools/unknotdb_cli.py find-knots-by-catalogue-property \
+  --property unknotting_number=1
+tools/unknotdb_cli.py neighbors 9_19 --status replay_verified
+tools/unknotdb_cli.py catalogue-coverage
+```
+
+Adjacency rows are explicitly `claimed`, `diagram_attested`, or
+`replay_verified`.  Only the last status is a named projection of an immutable
+one-CC proof edge in a pinned graph snapshot.  See
+[`schema/federated-catalogue-v1.md`](schema/federated-catalogue-v1.md).
 
 Jones coverage is complete for the 3,401 named knots in the current maps. Wide
 source braids are handled by `tools/backfill_jones_pd.py`: it checks the exact

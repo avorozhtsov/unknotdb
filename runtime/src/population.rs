@@ -150,6 +150,9 @@ impl PopulationGraph {
                     preferred_cc += 1;
                     (b'C', Some(action), audit_sha256)
                 }
+                PolicyStopAttestation::CapacityFallback { audit_sha256 } => {
+                    (b'R', None, audit_sha256)
+                }
             };
             let mut material =
                 Vec::with_capacity(64 + old_adapter.len() + new_adapter.len() + old_audit.len());
@@ -161,12 +164,14 @@ impl PopulationGraph {
             material.push(0);
             material.extend_from_slice(new_adapter.as_bytes());
             let audit_sha256 = unknotdb::util::sha256(&material);
-            node.policy_stop = match action {
-                Some(action) => PolicyStopAttestation::PreferredCrossingChange {
+            node.policy_stop = match (kind, action) {
+                (b'C', Some(action)) => PolicyStopAttestation::PreferredCrossingChange {
                     action,
                     audit_sha256,
                 },
-                None => PolicyStopAttestation::Terminal { audit_sha256 },
+                (b'T', None) => PolicyStopAttestation::Terminal { audit_sha256 },
+                (b'R', None) => PolicyStopAttestation::CapacityFallback { audit_sha256 },
+                _ => unreachable!("policy stop kind/action constructed above"),
             };
         }
         (terminal, preferred_cc)
@@ -207,6 +212,17 @@ impl PopulationGraph {
         }
         let meta = hot.meta().clone();
         let conn = snapshot.connection();
+        if snapshot.schema_version()? >= 4 {
+            let attested: i64 =
+                conn.query_row("SELECT count(*) FROM policy_stops", [], |row| row.get(0))?;
+            let total: i64 = conn.query_row("SELECT count(*) FROM nodes", [], |row| row.get(0))?;
+            if attested != total {
+                return Err(
+                    "mutable PopulationGraph resume does not yet support exact checkpoint vertices"
+                        .into(),
+                );
+            }
+        }
         let mut keys_by_node = Vec::with_capacity(hot.node_count());
         let mut nodes = HashMap::with_capacity(hot.node_count());
         let node_sql = if snapshot.schema_version()? >= 2 {
@@ -279,6 +295,7 @@ impl PopulationGraph {
                     audit_sha256,
                 },
                 (1, None) => PolicyStopAttestation::Terminal { audit_sha256 },
+                (2, None) => PolicyStopAttestation::CapacityFallback { audit_sha256 },
                 _ => {
                     return Err(
                         format!("resumed node {} has a malformed policy stop", node_id).into(),
@@ -524,6 +541,9 @@ impl PopulationGraph {
             PolicyStopAttestation::Terminal { audit_sha256 } => audit_sha256,
             PolicyStopAttestation::PreferredCrossingChange { .. } => {
                 return Err("population benchmark root is not terminal".into())
+            }
+            PolicyStopAttestation::CapacityFallback { .. } => {
+                return Err("population benchmark root is a capacity fallback".into())
             }
         };
         let mut cases = Vec::with_capacity(graph.nodes.len().saturating_sub(1));
@@ -1479,6 +1499,7 @@ fn validate_policy_stop(
                 return Err("population terminal stop is not B1 []".into());
             }
         }
+        PolicyStopAttestation::CapacityFallback { .. } => {}
     }
     Ok(())
 }

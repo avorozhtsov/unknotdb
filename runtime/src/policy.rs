@@ -17,8 +17,9 @@ use std::path::Path;
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 
 pub const POLICY_ADAPTER_VERSION: &str =
-    "initial-reducer-clean-controller-acyclic-top1-self-loop-skip4-mirror-orbit-v4";
+    "initial-reducer-clean-controller-capacity-fallback-acyclic-top1-self-loop-skip4-mirror-orbit-v5";
 pub const LEGACY_POLICY_ADAPTER_VERSIONS: &[&str] = &[
+    "initial-reducer-clean-controller-acyclic-top1-self-loop-skip4-mirror-orbit-v4",
     "initial-reducer-clean-controller-top1-self-loop-skip4-mirror-orbit-v3",
     "initial-reducer-clean-controller-top1-mirror-orbit-v2",
 ];
@@ -91,6 +92,10 @@ pub enum OracleDecision {
     EnvironmentTerminated {
         controller_plies: u32,
     },
+    /// The frozen model cannot encode this exact normalized representation.
+    /// No heuristic decision was made; the deterministic reducer output is an
+    /// admitted stopping point under the versioned capacity-fallback rule.
+    CapacityExceeded,
 }
 
 impl OracleDecision {
@@ -106,6 +111,7 @@ impl OracleDecision {
             | Self::PolicyPlyLimit { controller_plies }
             | Self::ControllerCycle { controller_plies }
             | Self::EnvironmentTerminated { controller_plies } => controller_plies,
+            Self::CapacityExceeded => 0,
         }
     }
 }
@@ -173,6 +179,7 @@ pub enum PolicyStopReason {
     RepresentationCycle,
     ControllerCycle,
     EnvironmentTerminated,
+    CapacityFallback,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -203,6 +210,7 @@ pub enum PolicyRoundDecision {
     EnvironmentTerminated {
         controller_plies: u32,
     },
+    CapacityFallback,
 }
 
 impl PolicyRoundDecision {
@@ -221,7 +229,7 @@ impl PolicyRoundDecision {
             }
             | Self::ControllerCycle { controller_plies }
             | Self::EnvironmentTerminated { controller_plies } => controller_plies,
-            Self::TerminalRepresentation | Self::SemanticMoveLimit => 0,
+            Self::TerminalRepresentation | Self::SemanticMoveLimit | Self::CapacityFallback => 0,
         }
     }
 }
@@ -360,7 +368,9 @@ impl PreprocessingReport {
     pub fn is_graph_stopping_point(&self) -> bool {
         matches!(
             self.stop_reason,
-            PolicyStopReason::PreferredCrossingChange | PolicyStopReason::TerminalRepresentation
+            PolicyStopReason::PreferredCrossingChange
+                | PolicyStopReason::TerminalRepresentation
+                | PolicyStopReason::CapacityFallback
         )
     }
 
@@ -465,6 +475,9 @@ impl PreprocessingReport {
                 }
                 PolicyRoundDecision::EnvironmentTerminated { .. } => {
                     terminal_reason = Some(PolicyStopReason::EnvironmentTerminated);
+                }
+                PolicyRoundDecision::CapacityFallback => {
+                    terminal_reason = Some(PolicyStopReason::CapacityFallback);
                 }
             }
         }
@@ -654,6 +667,13 @@ pub fn preprocess_to_stopping_point<O: PolicyOracle>(
                     decision: PolicyRoundDecision::EnvironmentTerminated { controller_plies },
                 });
                 break PolicyStopReason::EnvironmentTerminated;
+            }
+            OracleDecision::CapacityExceeded => {
+                rounds.push(PolicyRound {
+                    source: current,
+                    decision: PolicyRoundDecision::CapacityFallback,
+                });
+                break PolicyStopReason::CapacityFallback;
             }
         }
     };
@@ -890,6 +910,13 @@ pub fn preprocess_many_to_stopping_points<O: PolicyOracle>(
                     });
                     state.stop_reason = Some(PolicyStopReason::EnvironmentTerminated);
                 }
+                OracleDecision::CapacityExceeded => {
+                    state.rounds.push(PolicyRound {
+                        source,
+                        decision: PolicyRoundDecision::CapacityFallback,
+                    });
+                    state.stop_reason = Some(PolicyStopReason::CapacityFallback);
+                }
             }
         }
     }
@@ -1092,7 +1119,8 @@ pub fn compile_preprocessing_instructions(
                 push_normalization(&mut instructions, next.source.witness);
             }
             PolicyRoundDecision::PreferredCrossingChange { .. }
-            | PolicyRoundDecision::TerminalRepresentation => {}
+            | PolicyRoundDecision::TerminalRepresentation
+            | PolicyRoundDecision::CapacityFallback => {}
             _ => {
                 return Err("compiled preprocessing route has an incomplete terminal round".into())
             }
@@ -1186,6 +1214,7 @@ fn encode_round_decision(bytes: &mut Vec<u8>, decision: PolicyRoundDecision) -> 
         PolicyRoundDecision::EnvironmentTerminated { controller_plies } => {
             (8, None, controller_plies)
         }
+        PolicyRoundDecision::CapacityFallback => (9, None, 0),
     };
     bytes.push(kind);
     bytes.extend_from_slice(&plies.to_le_bytes());
@@ -1209,6 +1238,7 @@ fn stop_reason_code(reason: PolicyStopReason) -> u8 {
         PolicyStopReason::RepresentationCycle => 5,
         PolicyStopReason::ControllerCycle => 6,
         PolicyStopReason::EnvironmentTerminated => 7,
+        PolicyStopReason::CapacityFallback => 8,
     }
 }
 
@@ -1284,6 +1314,9 @@ impl ExternalPolicyOracle {
         self.input.flush()?;
         let response = read_protocol_line(&mut self.output)?;
         if let Some(error) = response.strip_prefix("ERROR ") {
+            if is_model_capacity_error(error) {
+                return Ok("STOP_CAPACITY".into());
+            }
             return Err(format!("policy process: {error}").into());
         }
         Ok(response)
@@ -1366,6 +1399,24 @@ impl PolicyOracle for ExternalPolicyOracle {
         }
         self.input.flush()?;
         let header = read_protocol_line(&mut self.output)?;
+        if let Some(error) = header.strip_prefix("ERROR ") {
+            if is_model_capacity_error(error) {
+                // The external batch is all-or-nothing. Retry scalar requests
+                // so a mixed batch cannot misclassify an encodable row merely
+                // because another row exceeded Q254 capacity.
+                return requests
+                    .iter()
+                    .map(|request| {
+                        self.first_semantic_decision_excluding(
+                            request.source,
+                            request.remaining_policy_plies,
+                            request.excluded_actions,
+                        )
+                    })
+                    .collect();
+            }
+            return Err(format!("policy process: {error}").into());
+        }
         if header != format!("BATCH {}", requests.len()) {
             return Err(format!("malformed policy batch header `{header}`").into());
         }
@@ -1373,6 +1424,10 @@ impl PolicyOracle for ExternalPolicyOracle {
         for _ in requests {
             let response = read_protocol_line(&mut self.output)?;
             if let Some(error) = response.strip_prefix("ERROR ") {
+                if is_model_capacity_error(error) {
+                    decisions.push(OracleDecision::CapacityExceeded);
+                    continue;
+                }
                 return Err(format!("policy process: {error}").into());
             }
             decisions.push(parse_oracle_decision(&response)?);
@@ -1395,6 +1450,7 @@ fn encode_excluded_actions(actions: &[SemanticAction]) -> Result<String> {
 fn parse_oracle_decision(response: &str) -> Result<OracleDecision> {
     let fields: Vec<_> = response.split_whitespace().collect();
     match fields.as_slice() {
+        ["STOP_CAPACITY"] => Ok(OracleDecision::CapacityExceeded),
         ["APPLY", encoded, controller] => Ok(OracleDecision::Apply {
             action: parse_action(encoded)?,
             controller_plies: parse_u32(controller, "controller ply count")?,
@@ -1417,6 +1473,14 @@ fn parse_oracle_decision(response: &str) -> Result<OracleDecision> {
         }),
         _ => Err(format!("malformed policy-process response `{response}`").into()),
     }
+}
+
+/// Only the two exact capacity diagnostics emitted by the pinned RF braid
+/// environment activate reducer-only fallback. All other model/process errors
+/// remain hard failures and cannot silently create graph vertices.
+fn is_model_capacity_error(error: &str) -> bool {
+    error.ends_with("initial Markov stabilizations exceed strand capacity")
+        || error.ends_with("initial Markov stabilizations exceed word capacity")
 }
 
 impl Drop for ExternalPolicyOracle {
@@ -1728,6 +1792,38 @@ mod tests {
         assert_eq!(report.stop_reason, PolicyStopReason::TerminalRepresentation);
         assert!(report.is_graph_stopping_point());
         report.verify().unwrap();
+    }
+
+    #[test]
+    fn model_capacity_miss_admits_reducer_only_normalized_stop() {
+        let input = braid(3, &[1, -1, 2, 2]);
+        let mut oracle = FakeOracle::new([OracleDecision::CapacityExceeded]);
+        let report =
+            preprocess_to_stopping_point(&input, &mut oracle, PolicyLimits::default()).unwrap();
+        assert_eq!(report.stop_reason, PolicyStopReason::CapacityFallback);
+        assert!(report.is_graph_stopping_point());
+        assert_eq!(report.policy_plies, 0);
+        assert_eq!(report.semantic_moves, 0);
+        assert_eq!(report.output, report.initial_reduction.output);
+        assert!(matches!(
+            report.rounds.as_slice(),
+            [PolicyRound {
+                decision: PolicyRoundDecision::CapacityFallback,
+                ..
+            }]
+        ));
+        report.verify().unwrap();
+    }
+
+    #[test]
+    fn only_exact_model_capacity_errors_activate_fallback() {
+        assert!(is_model_capacity_error(
+            "ValueError: initial Markov stabilizations exceed strand capacity"
+        ));
+        assert!(is_model_capacity_error(
+            "ValueError: initial Markov stabilizations exceed word capacity"
+        ));
+        assert!(!is_model_capacity_error("ValueError: bad checkpoint shape"));
     }
 
     #[test]

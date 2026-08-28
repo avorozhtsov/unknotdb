@@ -118,6 +118,20 @@ pub fn run_descending_backfill<O: PolicyOracle>(
             ));
             continue;
         }
+        let descending_cc_count = descending_crossing_changes_v0(representation)?.len();
+        if !descending_can_improve(descending_cc_count, seed.u_upper_bound) {
+            excluded += 1;
+            manifest.push_str(&format!(
+                "certificate\t{}\t{}\t{}\t{}\t{}\t{}\tnot_improving\n",
+                hex(&seed.representation.key),
+                seed.u_upper_bound,
+                representation.strands,
+                representation.word.len(),
+                descending_cc_count,
+                seed.u_upper_bound,
+            ));
+            continue;
+        }
         match compile_chain(seed, oracle, limits.policy_limits) {
             Ok((edges, cc_count)) => {
                 for edge in edges.into_iter().rev() {
@@ -305,6 +319,9 @@ pub(crate) fn attestation(report: &PreprocessingReport) -> Result<PolicyStopAtte
         PolicyStopReason::TerminalRepresentation => {
             Ok(PolicyStopAttestation::Terminal { audit_sha256 })
         }
+        PolicyStopReason::CapacityFallback => {
+            Ok(PolicyStopAttestation::CapacityFallback { audit_sha256 })
+        }
         _ => Err("incomplete preprocessing has no graph attestation".into()),
     }
 }
@@ -315,4 +332,20 @@ fn hex(bytes: &[u8]) -> String {
 
 fn sanitize(value: &str) -> String {
     value.replace(['\t', '\n'], " ")
+}
+
+fn descending_can_improve(cc_count: usize, current_u: u32) -> bool {
+    cc_count < current_u as usize
+}
+
+#[cfg(test)]
+mod tests {
+    use super::descending_can_improve;
+
+    #[test]
+    fn fallback_is_stored_only_for_a_strictly_better_bound() {
+        assert!(descending_can_improve(1, 2));
+        assert!(!descending_can_improve(1, 1));
+        assert!(!descending_can_improve(2, 1));
+    }
 }

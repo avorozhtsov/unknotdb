@@ -31,14 +31,22 @@ contains a mirror bit and an origin shift, and actions are transported exactly.
 This quotients the value graph by the proved symmetry
 `U(K)=U(mirror(K))`; it does not call chiral knots isotopic.
 
-For a policy edge, the required endpoint remains
+Schema v4 distinguishes two key domains. `key_kind=0` is the canonical
+mirror/origin orbit used by normal lookup. `key_kind=1` is
+`sha256("UNKNOTDB_EXACT_BRAID_CHECKPOINT_V0\\0" || exact_encoding)` and is used
+for an exact, possibly unnormalized checkpoint inside a proof. Exact
+checkpoints are never silently mirror- or origin-quotiented.
+
+For a canonical policy edge, the required endpoint remains
 
 ```text
 target_key = Key(Normalize(Apply(program, source_representation)))
 ```
 
-The raw result of `Apply` is an input checkpoint to normalization, not a graph
-node.
+The raw result of `Apply` may either remain compressed inside the program or be
+materialized as a `key_kind=1` proof vertex when a witness/importer needs that
+coordinate chart. It does not become a canonical lookup hit until a replayed
+zero-CC path reaches a `key_kind=0` vertex.
 
 Production policy macros use checkpointed proof-program v1. Its compact
 `NORMALIZE_ORIGIN` and `MIRROR_ORBIT` instructions record intermediate chart
@@ -63,10 +71,14 @@ with objective L1000 and follows its top-1 internal controller actions. A
 preferred zero-CC semantic action is applied by Rust and only mirror/origin
 normalization follows; the reducer is not run again. This preserves a
 deliberately expanded state prepared by the policy for its next CC. A
-nonterminal representation is admitted only when the next clean semantic
-preference is a legal CC, before that CC is applied. Adapter v3 skips at most
-four zero-CC proposals that normalize to an already visited key, asking for the
-next-ranked action each time; rejected self-loops are not part of the witness.
+nonterminal representation is normally admitted when the next clean semantic
+preference is a legal CC, before that CC is applied. Adapter v5 additionally
+admits a reducer-only normalized stopping point if and only if the pinned Q254
+environment returns one of its two exact strand/word-capacity diagnostics. No
+network action is claimed in that case; every other oracle error remains fatal.
+The adapter skips at most four zero-CC proposals that normalize to an already
+visited key, asking for the next-ranked action each time; rejected self-loops
+are not part of the witness.
 
 `R3` and inverse/expanding moves remain outside the decreasing reducer, though a
 bounded policy route may propose a permitted zero-CC move that Rust can replay.
@@ -75,14 +87,14 @@ separately.
 
 ## Stopping points
 
-A production node is retained only when it is a policy stopping point for the
-snapshot's one model/L1000/clean-controller contract. Concretely, its first
-semantic preference is a legal CC, or it is the canonical terminal `B1 []`.
-Route endpoints, seed nodes and auxiliary L10/L1000 nodes do not override this
-rule.
+A canonical value node is a preferred-CC policy stop, the canonical terminal
+`B1 []`, or an explicitly attested reducer-only capacity fallback. Schema v4
+also permits unattested exact proof checkpoints. Such vertices exist only to
+make a replayable route explicit; their exact keys do not participate in
+canonical mirror-orbit lookup.
 
-RI/RII intermediate states inside a macro are stored only in its compressed
-program. Normalization-only intermediate encodings are never nodes. Snapshot
+RI/RII intermediate states may remain in the compressed program or be promoted
+to exact checkpoints when useful for merging or inspection. Snapshot
 generation deduplicates every retained node by `rep_key`.
 
 Role bits are reserved for `CORE`, `L10_AUX` and `L1000_AUX`. L10/L1000 routes

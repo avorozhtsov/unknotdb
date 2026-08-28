@@ -15,6 +15,7 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub mod campaign;
+pub mod catalogue_braid_import;
 pub mod catalogue_planar_import;
 pub mod census;
 pub mod descending;
@@ -30,13 +31,14 @@ pub mod reducer;
 pub mod representation;
 pub mod rf_import;
 pub mod targeted;
+pub mod wang_zhang_import;
 
 pub type Result<T> = std::result::Result<T, Box<dyn Error + Send + Sync>>;
 pub type RepKey = [u8; 32];
 pub type NodeId = u32;
 pub type EdgeId = u32;
 
-pub const SCHEMA_VERSION: u32 = 3;
+pub const SCHEMA_VERSION: u32 = 4;
 pub const ROLE_CORE: u8 = 1;
 pub const ROLE_L10_AUX: u8 = 2;
 pub const ROLE_L1000_AUX: u8 = 4;
@@ -80,7 +82,7 @@ FROM nodes ORDER BY node_id
 
 const SCHEMA_SQL: &str = r#"
 PRAGMA application_id = 1430996034;
-PRAGMA user_version = 3;
+PRAGMA user_version = 4;
 
 CREATE TABLE meta (
     key   TEXT PRIMARY KEY,
@@ -116,6 +118,8 @@ CREATE TABLE nodes (
 CREATE TABLE node_keys (
     rep_key BLOB PRIMARY KEY CHECK(length(rep_key) = 32),
     node_id INTEGER NOT NULL,
+    -- 0: mirror/origin canonical key; 1: exact unnormalized checkpoint key.
+    key_kind INTEGER NOT NULL CHECK(key_kind BETWEEN 0 AND 1),
     FOREIGN KEY(node_id) REFERENCES nodes(node_id)
 ) WITHOUT ROWID;
 
@@ -130,11 +134,11 @@ CREATE TABLE representations (
 -- and reproducible from the frozen model; action legality remains exact here.
 CREATE TABLE policy_stops (
     node_id                 INTEGER PRIMARY KEY,
-    stop_kind               INTEGER NOT NULL CHECK(stop_kind BETWEEN 0 AND 1),
+    stop_kind               INTEGER NOT NULL CHECK(stop_kind BETWEEN 0 AND 2),
     preferred_cc_action     INTEGER CHECK(preferred_cc_action >= 0),
     audit_sha256            BLOB NOT NULL CHECK(length(audit_sha256) = 32),
     CHECK((stop_kind=0 AND preferred_cc_action IS NOT NULL) OR
-          (stop_kind=1 AND preferred_cc_action IS NULL)),
+          (stop_kind IN (1,2) AND preferred_cc_action IS NULL)),
     FOREIGN KEY(node_id) REFERENCES nodes(node_id)
 ) WITHOUT ROWID;
 
@@ -330,8 +334,19 @@ pub struct NodeRecord {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PolicyStopAttestation {
-    PreferredCrossingChange { action: u64, audit_sha256: RepKey },
-    Terminal { audit_sha256: RepKey },
+    PreferredCrossingChange {
+        action: u64,
+        audit_sha256: RepKey,
+    },
+    Terminal {
+        audit_sha256: RepKey,
+    },
+    /// The pinned model could not encode this state. The stored audit proves
+    /// deterministic decreasing reduction plus exact canonicalization; no
+    /// neural-network action was asserted.
+    CapacityFallback {
+        audit_sha256: RepKey,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -859,8 +874,9 @@ where
                     next_acs10_cc_cost, first_acs10_action \
                  ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",
             )?;
-            let mut key_stmt =
-                conn.prepare_cached("INSERT INTO node_keys(rep_key, node_id) VALUES (?1, ?2)")?;
+            let mut key_stmt = conn.prepare_cached(
+                "INSERT INTO node_keys(rep_key, node_id, key_kind) VALUES (?1, ?2, ?3)",
+            )?;
             let mut rep_stmt = conn
                 .prepare_cached("INSERT INTO representations(node_id, encoding) VALUES (?1, ?2)")?;
             let mut stop_stmt = conn.prepare_cached(
@@ -898,7 +914,21 @@ where
                     a.map(|s| i64::from(s.cc_cost)),
                     a.map(|s| i64_from_u64(s.first_action)).transpose()?,
                 ])?;
-                key_stmt.execute(params![node.rep_key.as_slice(), i64::from(node.node_id)])?;
+                let key_kind = if meta.synthetic {
+                    0_i64
+                } else {
+                    let decoded = representation::BraidRepresentation::decode(&node.encoding)?;
+                    if decoded.is_normalized()? {
+                        0_i64
+                    } else {
+                        1_i64
+                    }
+                };
+                key_stmt.execute(params![
+                    node.rep_key.as_slice(),
+                    i64::from(node.node_id),
+                    key_kind
+                ])?;
                 let stored_encoding = if meta.synthetic {
                     node.encoding
                 } else {
@@ -913,6 +943,9 @@ where
                         } => (0_i64, Some(i64_from_u64(action)?), audit_sha256),
                         PolicyStopAttestation::Terminal { audit_sha256 } => {
                             (1_i64, None, audit_sha256)
+                        }
+                        PolicyStopAttestation::CapacityFallback { audit_sha256 } => {
+                            (2_i64, None, audit_sha256)
                         }
                     };
                     stop_stmt.execute(params![
@@ -1433,12 +1466,71 @@ fn validate_connection(conn: &Connection) -> Result<()> {
     if meta.synthetic && stop_count != 0 {
         return Err("synthetic snapshot contains policy stopping attestations".into());
     }
-    if !meta.synthetic && stop_count != node_count {
+    let schema = snapshot_schema_version(conn)?;
+    if !meta.synthetic && schema < 4 && stop_count != node_count {
         return Err(format!(
             "production snapshot has {} policy stops for {} vertices",
             stop_count, node_count
         )
         .into());
+    }
+    if !meta.synthetic && schema >= 4 && stop_count > node_count {
+        return Err("production snapshot has more policy stops than vertices".into());
+    }
+    if schema >= 4 && !meta.synthetic {
+        let bad_key_kind: Option<i64> = conn
+            .query_row(
+                "SELECT node_id FROM node_keys WHERE key_kind NOT IN (0,1) LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if let Some(id) = bad_key_kind {
+            return Err(format!("node {} has an invalid key kind", id).into());
+        }
+        let mut stmt = conn.prepare(
+            "SELECT k.node_id,k.rep_key,k.key_kind,r.encoding, \
+                    EXISTS(SELECT 1 FROM policy_stops s WHERE s.node_id=k.node_id) \
+             FROM node_keys k JOIN representations r ON r.node_id=k.node_id \
+             ORDER BY k.node_id",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, Vec<u8>>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, Vec<u8>>(3)?,
+                row.get::<_, bool>(4)?,
+            ))
+        })?;
+        for row in rows {
+            let (node_id, raw_key, key_kind, encoding, has_stop) = row?;
+            let key = rep_key_from_slice(&raw_key)?;
+            let representation = representation::BraidRepresentation::decode_storage(&encoding)?;
+            let normalized = representation.normalize()?;
+            let is_normalized = representation.is_normalized()?;
+            let expected_kind = if is_normalized { 0 } else { 1 };
+            if key_kind != expected_kind {
+                return Err(format!(
+                    "node {} key kind disagrees with its exact representation",
+                    node_id
+                )
+                .into());
+            }
+            let expected_key = if is_normalized {
+                normalized.key
+            } else {
+                representation.exact_checkpoint_key()?
+            };
+            if key != expected_key {
+                return Err(format!("node {} checkpoint key mismatch", node_id).into());
+            }
+            if has_stop && !is_normalized {
+                return Err(
+                    format!("node {} has a policy stop but is not normalized", node_id).into(),
+                );
+            }
+        }
     }
     let bad_edge: Option<i64> = conn
         .query_row(
@@ -1593,14 +1685,27 @@ fn validate_node_for_meta(node: &NodeRecord, meta: &SnapshotMeta) -> Result<()> 
     let decoded = representation::BraidRepresentation::decode(&node.encoding)
         .map_err(|error| format!("node {} representation: {}", node.node_id, error))?;
     let normalized = decoded.normalize()?;
-    if normalized.witness.mirrored
-        || normalized.witness.rotate_word_left != 0
-        || normalized.encoded != node.encoding
-    {
-        return Err(format!("node {} representation is not normalized", node.node_id).into());
+    let is_normalized = !normalized.witness.mirrored
+        && normalized.witness.rotate_word_left == 0
+        && normalized.encoded == node.encoding;
+    if node.policy_stop.is_some() && !is_normalized {
+        return Err(format!(
+            "node {} has a policy/reducer attestation but is not normalized",
+            node.node_id
+        )
+        .into());
     }
-    if normalized.key != node.rep_key {
-        return Err(format!("node {} rep_key does not match its encoding", node.node_id).into());
+    let expected_key = if is_normalized {
+        normalized.key
+    } else {
+        decoded.exact_checkpoint_key()?
+    };
+    if expected_key != node.rep_key {
+        return Err(format!(
+            "node {} key does not match its checkpoint kind",
+            node.node_id
+        )
+        .into());
     }
     if !decoded.is_knot_closure()? {
         return Err(format!(
@@ -1617,12 +1722,13 @@ fn validate_node_for_meta(node: &NodeRecord, meta: &SnapshotMeta) -> Result<()> 
             )
         })?;
     }
-    match node.policy_stop.ok_or_else(|| {
-        format!(
-            "production node {} lacks an active-model stopping attestation",
-            node.node_id
-        )
-    })? {
+    let Some(policy_stop) = node.policy_stop else {
+        // Exact proof checkpoints need no policy assertion. If unnormalized,
+        // their domain-separated key prevents accidental canonical lookup or
+        // mirror-orbit merging. Their graph edges remain fully replay-checked.
+        return Ok(());
+    };
+    match policy_stop {
         PolicyStopAttestation::PreferredCrossingChange { action, .. } => {
             let action = representation::SemanticAction::decode_u63(action).map_err(|error| {
                 format!(
@@ -1644,6 +1750,7 @@ fn validate_node_for_meta(node: &NodeRecord, meta: &SnapshotMeta) -> Result<()> 
                 return Err(format!("node {} falsely claims to be terminal", node.node_id).into());
             }
         }
+        PolicyStopAttestation::CapacityFallback { .. } => {}
     }
     Ok(())
 }
@@ -1886,6 +1993,45 @@ mod tests {
     }
 
     #[test]
+    fn schema_four_admits_exact_unnormalized_proof_checkpoint() {
+        let path = test_path("exact-checkpoint");
+        let representation = representation::BraidRepresentation {
+            strands: 2,
+            cyclic_band_generators: false,
+            word: vec![-1],
+        };
+        assert!(!representation.is_normalized().unwrap());
+        let key = representation.exact_checkpoint_key().unwrap();
+        let node = NodeRecord {
+            rep_key: key,
+            node_id: 0,
+            role_mask: ROLE_CORE,
+            encoding: representation.encode().unwrap(),
+            u_upper_bound: None,
+            unknot_route_rank: None,
+            acs10: None,
+            acs_route_rank: None,
+            next_unknot: None,
+            next_acs10: None,
+            policy_stop: None,
+        };
+        write_snapshot_atomic(&path, &production_meta(), [node], []).unwrap();
+        let snapshot = SqliteSnapshot::open_file(&path).unwrap();
+        assert_eq!(snapshot.schema_version().unwrap(), 4);
+        assert!(snapshot.lookup(&key).unwrap().is_some());
+        let key_kind: i64 = snapshot
+            .connection()
+            .query_row(
+                "SELECT key_kind FROM node_keys WHERE node_id=0",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(key_kind, 1);
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
     fn zero_cc_unknot_route_requires_equal_u_and_decreasing_rank() {
         let path = test_path("zero-cc-u-route");
         let mut nodes: Vec<_> = synthetic_nodes(2).collect();
@@ -1944,7 +2090,7 @@ mod tests {
     }
 
     #[test]
-    fn schema_three_splits_keys_and_deduplicates_anchored_programs() {
+    fn schema_four_splits_keys_and_deduplicates_anchored_programs() {
         let path = test_path("program-dictionary");
         let nodes: Vec<_> = synthetic_nodes(3).collect();
         let mut edges: Vec<_> = synthetic_edges(3).collect();
@@ -2034,7 +2180,7 @@ mod tests {
     }
 
     #[test]
-    fn production_snapshot_requires_a_legal_cc_or_terminal_policy_stop() {
+    fn production_snapshot_allows_unattested_checkpoint_but_validates_policy_stop() {
         let path = test_path("production-policy-stop");
         let normalized = representation::BraidRepresentation {
             strands: 2,
@@ -2057,14 +2203,14 @@ mod tests {
             policy_stop,
         };
 
-        let missing = write_snapshot_atomic(
+        write_snapshot_atomic(
             &path,
             &production_meta(),
             [make_node(None)],
             std::iter::empty(),
         )
-        .unwrap_err();
-        assert!(missing.to_string().contains("lacks an active-model"));
+        .unwrap();
+        fs::remove_file(&path).unwrap();
 
         let not_cc = PolicyStopAttestation::PreferredCrossingChange {
             action: representation::SemanticAction::Reduce { position: 0 }

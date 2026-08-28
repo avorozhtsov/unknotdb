@@ -4,11 +4,24 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import re
 import sqlite3
 import sys
 from pathlib import Path
 from typing import Any
+
+SNAPPY_KNOT_NAME = re.compile(r"^K?(\d+)([an])(\d+)$", re.IGNORECASE)
+
+
+def canonical_knot_id(name: str) -> str:
+    name = name.removeprefix("knot:")
+    match = SNAPPY_KNOT_NAME.fullmatch(name.replace("_", ""))
+    if match:
+        crossings, kind, index = match.groups()
+        return f"knot:{int(crossings)}{kind.lower()}_{int(index)}"
+    return f"knot:{name}"
 
 
 def constraint(text: str) -> tuple[str, str]:
@@ -26,7 +39,9 @@ def word(text: str) -> tuple[int, ...]:
     try:
         result = tuple(int(value) for value in text.split(","))
     except ValueError as error:
-        raise argparse.ArgumentTypeError("word must contain comma-separated integers") from error
+        raise argparse.ArgumentTypeError(
+            "word must contain comma-separated integers"
+        ) from error
     if any(value == 0 for value in result):
         raise argparse.ArgumentTypeError("word cannot contain padding zero")
     return result
@@ -57,9 +72,114 @@ def fingerprint_connection(path: Path) -> sqlite3.Connection:
 def identification_connection(path: Path) -> sqlite3.Connection:
     result = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
     schema = result.execute("SELECT value FROM meta WHERE key='schema'").fetchone()
-    if schema != ("unknotdb-identification-maps-v3",):
+    if schema not in {
+        ("unknotdb-identification-maps-v3",),
+        ("unknotdb-graph-identification-v4",),
+        ("unknotdb-graph-identification-v5",),
+    }:
         raise ValueError("unsupported identification-map schema")
     return result
+
+
+def federation_connection(path: Path) -> sqlite3.Connection:
+    result = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    schema = result.execute("SELECT value FROM meta WHERE key='schema'").fetchone()
+    if schema != ("unknotdb-federated-catalogue-v1",):
+        raise ValueError("unsupported federated catalogue schema")
+    return result
+
+
+def resolve_knot(db: sqlite3.Connection, identifier: str, scheme: str | None) -> int:
+    if scheme:
+        rows = list(
+            db.execute(
+                "SELECT knot_pk FROM knot_identifiers WHERE scheme=? AND identifier=?",
+                (scheme, identifier),
+            )
+        )
+    else:
+        rows = list(
+            db.execute(
+                "SELECT DISTINCT knot_pk FROM knot_identifiers WHERE identifier=?",
+                (identifier,),
+            )
+        )
+    if not rows:
+        raise ValueError(f"unknown catalogue identifier: {identifier}")
+    if len(rows) != 1:
+        raise ValueError(
+            f"ambiguous catalogue identifier: {identifier}; specify --scheme"
+        )
+    return int(rows[0][0])
+
+
+def federated_knot_rows(db: sqlite3.Connection, knot_pk: int) -> list[dict[str, Any]]:
+    name, crossing, table_kind = db.execute(
+        "SELECT canonical_id,crossing_number,table_kind FROM knots WHERE knot_pk=?",
+        (knot_pk,),
+    ).fetchone()
+    rows: list[dict[str, Any]] = [
+        {
+            "kind": "catalogue_knot",
+            "name": name,
+            "value": crossing,
+            "detail": table_kind,
+        }
+    ]
+    rows.extend(
+        {
+            "kind": "identifier",
+            "name": scheme,
+            "value": identifier,
+            "detail": role,
+        }
+        for scheme, identifier, role in db.execute(
+            "SELECT scheme,identifier,role FROM knot_identifiers WHERE knot_pk=? ORDER BY role,scheme,identifier",
+            (knot_pk,),
+        )
+    )
+    rows.extend(
+        {
+            "kind": "representation",
+            "name": encoding,
+            "value": text,
+            "detail": f"sha256={digest} rank={rank}",
+        }
+        for encoding, text, digest, rank in db.execute(
+            "SELECT encoding,representation_text,lower(hex(representation_sha256)),preferred_rank FROM representations WHERE knot_pk=? ORDER BY preferred_rank,encoding",
+            (knot_pk,),
+        )
+    )
+    rows.extend(
+        {
+            "kind": "catalogue_property",
+            "name": name,
+            "value": value,
+            "detail": source_id,
+        }
+        for name, value, source_id in db.execute(
+            """
+            SELECT d.property_name,v.value_text,p.source_id
+            FROM knot_properties p JOIN property_definitions d USING(property_id)
+            JOIN property_values v USING(value_id)
+            WHERE p.knot_pk=? ORDER BY d.property_name,p.source_id
+            """,
+            (knot_pk,),
+        )
+    )
+    rows.extend(
+        {
+            "kind": "proof_graph_link",
+            "name": f"node:{node_id}",
+            "value": key,
+            "detail": f"U_upper={u_upper} evidence={evidence}",
+        }
+        for key, node_id, u_upper, evidence in db.execute(
+            "SELECT lower(hex(stopping_key)),graph_node_id,graph_u_upper,evidence_class FROM graph_knot_links WHERE knot_pk=? ORDER BY evidence_class,stopping_key",
+            (knot_pk,),
+        )
+    )
+    return rows
 
 
 def emit(rows: list[dict[str, Any]], as_json: bool) -> None:
@@ -72,7 +192,11 @@ def emit(rows: list[dict[str, Any]], as_json: bool) -> None:
     columns = list(rows[0])
     print("\t".join(columns))
     for row in rows:
-        print("\t".join("-" if row[column] is None else str(row[column]) for column in columns))
+        print(
+            "\t".join(
+                "-" if row[column] is None else str(row[column]) for column in columns
+            )
+        )
 
 
 def invariant_rows(db: sqlite3.Connection, knot_id: str) -> list[dict[str, Any]]:
@@ -157,16 +281,23 @@ def find_matching_representations(
 
 def main() -> None:
     parser = argparse.ArgumentParser(prog="unknotdb")
-    parser.add_argument("--maps", type=Path, default=Path("outputs/unknotdb-lookup-maps-v2.sqlite"))
+    parser.add_argument(
+        "--maps", type=Path, default=Path("release-v0.10.1/lookup.sqlite")
+    )
     parser.add_argument(
         "--fingerprints",
         type=Path,
-        default=Path("outputs/unknotdb-braid-fingerprints-v3.sqlite"),
+        default=Path("release-v0.10.1/fingerprints.sqlite"),
     )
     parser.add_argument(
         "--identifications",
         type=Path,
-        default=Path("outputs/unknotdb-identification-maps-v3.sqlite"),
+        default=Path("release-v0.10.1/identification.sqlite"),
+    )
+    parser.add_argument(
+        "--federation",
+        type=Path,
+        default=Path("release-v0.10.1/federation.sqlite"),
     )
     parser.add_argument("--json", action="store_true")
     commands = parser.add_subparsers(dest="command", required=True)
@@ -184,21 +315,27 @@ def main() -> None:
     braid.add_argument("--skip-jones", action="store_true")
 
     find_knots = commands.add_parser("find-knots-by-invariant")
-    find_knots.add_argument("--invariant", action="append", type=constraint, required=True)
+    find_knots.add_argument(
+        "--invariant", action="append", type=constraint, required=True
+    )
     find_knots.add_argument("--limit", type=int, default=100)
 
     find_representations = commands.add_parser("find-representations-by-invariant")
     find_representations.add_argument(
         "--invariant", action="append", type=constraint, required=True
     )
-    find_representations.add_argument("--feature", action="append", type=constraint, default=[])
+    find_representations.add_argument(
+        "--feature", action="append", type=constraint, default=[]
+    )
     find_representations.add_argument(
         "--fingerprint", action="append", type=constraint, default=[]
     )
     find_representations.add_argument("--limit", type=int, default=100)
 
     find_features = commands.add_parser("find-representations-by-feature")
-    find_features.add_argument("--feature", action="append", type=constraint, required=True)
+    find_features.add_argument(
+        "--feature", action="append", type=constraint, required=True
+    )
     find_features.add_argument("--limit", type=int, default=100)
 
     definitions = commands.add_parser("list-invariants")
@@ -218,11 +355,66 @@ def main() -> None:
     identify = commands.add_parser("identification-for-representation")
     identify.add_argument("representation_id")
 
+    identify_graph = commands.add_parser("identification-for-graph")
+    identify_graph.add_argument("key_or_node")
+
+    postings = commands.add_parser("representations-for-knot")
+    postings.add_argument("name", help="for example 3_1 or knot:3_1")
+    postings.add_argument(
+        "--namespace", choices=("source", "graph", "all"), default="all"
+    )
+    postings.add_argument("--limit", type=int, default=100)
+
+    equivalence_candidates = commands.add_parser("list-equivalence-candidates")
+    equivalence_candidates.add_argument(
+        "--status",
+        choices=("pending", "attested", "verified", "all"),
+        default="pending",
+    )
+    equivalence_candidates.add_argument("--limit", type=int, default=100)
+
     gaps = commands.add_parser("list-identification-gaps")
     gaps.add_argument(
         "--kind", choices=("candidate", "unidentified", "all"), default="all"
     )
     gaps.add_argument("--limit", type=int, default=100)
+
+    knot_show = commands.add_parser("knot-show")
+    knot_show.add_argument("identifier")
+    knot_show.add_argument("--scheme")
+
+    resolve_identifier = commands.add_parser("resolve-identifier")
+    resolve_identifier.add_argument("identifier")
+    resolve_identifier.add_argument("--scheme")
+
+    resolve_representation = commands.add_parser("resolve-representation")
+    resolve_representation.add_argument("encoding")
+    resolve_representation.add_argument("representation", nargs="?")
+    resolve_representation.add_argument("--sha256")
+    resolve_representation.add_argument("--limit", type=int, default=100)
+
+    neighbors = commands.add_parser("neighbors")
+    neighbors.add_argument("identifier")
+    neighbors.add_argument("--scheme")
+    neighbors.add_argument(
+        "--status",
+        choices=("claimed", "diagram_attested", "replay_verified", "all"),
+        default="all",
+    )
+    neighbors.add_argument("--direction", choices=("out", "in", "both"), default="both")
+    neighbors.add_argument(
+        "--claims",
+        action="store_true",
+        help="show every representation-level claim instead of knot-type groups",
+    )
+    neighbors.add_argument("--limit", type=int, default=100)
+
+    commands.add_parser("catalogue-sources")
+    commands.add_parser("catalogue-coverage")
+
+    find_catalogue = commands.add_parser("find-knots-by-catalogue-property")
+    find_catalogue.add_argument("--property", type=constraint, required=True)
+    find_catalogue.add_argument("--limit", type=int, default=100)
 
     args = parser.parse_args()
     if hasattr(args, "limit") and args.limit <= 0:
@@ -230,7 +422,9 @@ def main() -> None:
 
     if args.command == "compute-braid-invariants":
         if args.strands < 1 or any(abs(value) >= args.strands for value in args.word):
-            raise ValueError("braid word has a generator outside the declared strand count")
+            raise ValueError(
+                "braid word has a generator outside the declared strand count"
+            )
         sys.path.insert(0, str(args.rf_src.resolve()))
         from rf_knots.invariants import (  # type: ignore[import-not-found]
             alexander_polynomial,
@@ -243,8 +437,16 @@ def main() -> None:
         alexander = to_pairs(alexander_polynomial(args.word, args.strands))
         signature_value = signature(args.word, args.strands)
         rows = [
-            {"kind": "knot_invariant", "name": "determinant", "value": determinant(args.word, args.strands)},
-            {"kind": "knot_invariant", "name": "alexander", "value": json.dumps(alexander, separators=(",", ":"))},
+            {
+                "kind": "knot_invariant",
+                "name": "determinant",
+                "value": determinant(args.word, args.strands),
+            },
+            {
+                "kind": "knot_invariant",
+                "name": "alexander",
+                "value": json.dumps(alexander, separators=(",", ":")),
+            },
             {"kind": "knot_invariant", "name": "signature", "value": signature_value},
             {
                 "kind": "rigorous_lower_bound",
@@ -257,14 +459,29 @@ def main() -> None:
                 {
                     "kind": "knot_invariant",
                     "name": "jones",
-                    "value": json.dumps(to_pairs(jones_polynomial(args.word, args.strands)), separators=(",", ":")),
+                    "value": json.dumps(
+                        to_pairs(jones_polynomial(args.word, args.strands)),
+                        separators=(",", ":"),
+                    ),
                 }
             )
         rows.extend(
             (
-                {"kind": "representation_feature", "name": "braid_strands", "value": args.strands},
-                {"kind": "representation_feature", "name": "word_length", "value": len(args.word)},
-                {"kind": "representation_feature", "name": "writhe", "value": sum(args.word)},
+                {
+                    "kind": "representation_feature",
+                    "name": "braid_strands",
+                    "value": args.strands,
+                },
+                {
+                    "kind": "representation_feature",
+                    "name": "word_length",
+                    "value": len(args.word),
+                },
+                {
+                    "kind": "representation_feature",
+                    "name": "writhe",
+                    "value": sum(args.word),
+                },
                 {
                     "kind": "representation_feature",
                     "name": "representation_l10",
@@ -272,6 +489,184 @@ def main() -> None:
                 },
             )
         )
+        emit(rows, args.json)
+        return
+
+    if args.command in {
+        "knot-show",
+        "resolve-identifier",
+        "resolve-representation",
+        "neighbors",
+        "catalogue-sources",
+        "catalogue-coverage",
+        "find-knots-by-catalogue-property",
+    }:
+        federation = federation_connection(args.federation)
+        if args.command in {"knot-show", "resolve-identifier", "neighbors"}:
+            knot_pk = resolve_knot(federation, args.identifier, args.scheme)
+        if args.command == "knot-show":
+            rows = federated_knot_rows(federation, knot_pk)
+        elif args.command == "resolve-identifier":
+            rows = [
+                {
+                    "knot_id": name,
+                    "crossing_number": crossing,
+                    "table_kind": table_kind,
+                }
+                for name, crossing, table_kind in federation.execute(
+                    "SELECT canonical_id,crossing_number,table_kind FROM knots WHERE knot_pk=?",
+                    (knot_pk,),
+                )
+            ]
+        elif args.command == "resolve-representation":
+            if bool(args.representation) == bool(args.sha256):
+                raise ValueError("provide exactly one representation text or --sha256")
+            digest = (
+                bytes.fromhex(args.sha256)
+                if args.sha256
+                else hashlib.sha256(
+                    args.encoding.encode()
+                    + b"\0"
+                    + args.representation.encode()
+                    + b"\0"
+                ).digest()
+            )
+            rows = [
+                {
+                    "knot_id": knot_id,
+                    "encoding": encoding,
+                    "representation": representation,
+                    "sha256": sha256,
+                    "source_id": source_id,
+                }
+                for knot_id, encoding, representation, sha256, source_id in federation.execute(
+                    """
+                    SELECT k.canonical_id,r.encoding,r.representation_text,
+                           lower(hex(r.representation_sha256)),r.source_id
+                    FROM representations r JOIN knots k USING(knot_pk)
+                    WHERE r.encoding=? AND r.representation_sha256=?
+                    ORDER BY k.canonical_id LIMIT ?
+                    """,
+                    (args.encoding, digest, args.limit),
+                )
+            ]
+        elif args.command == "neighbors":
+            status_clause = "" if args.status == "all" else " AND a.status=?"
+            status_params: list[Any] = [] if args.status == "all" else [args.status]
+            directions = (
+                ("out", "in") if args.direction == "both" else (args.direction,)
+            )
+            rows = []
+            for direction in directions:
+                if direction == "out" and args.claims:
+                    query = f"""
+                        SELECT t.canonical_id,a.status,a.claim_scope,a.source_id,
+                               a.crossing_locator,a.graph_edge_id,
+                               lower(hex(a.claim_id)),1
+                        FROM adjacency_claims a JOIN knots t
+                          ON t.knot_pk=a.target_knot_pk
+                        WHERE a.source_knot_pk=?{status_clause}
+                        ORDER BY a.status,t.canonical_id,a.claim_id LIMIT ?
+                    """
+                elif direction == "in" and args.claims:
+                    query = f"""
+                        SELECT s.canonical_id,a.status,a.claim_scope,a.source_id,
+                               a.crossing_locator,a.graph_edge_id,
+                               lower(hex(a.claim_id)),1
+                        FROM adjacency_claims a JOIN knots s
+                          ON s.knot_pk=a.source_knot_pk
+                        WHERE a.target_knot_pk=?{status_clause}
+                        ORDER BY a.status,s.canonical_id,a.claim_id LIMIT ?
+                    """
+                elif direction == "out":
+                    query = f"""
+                        SELECT t.canonical_id,a.status,a.claim_scope,a.source_id,
+                               NULL,min(a.graph_edge_id),NULL,count(*)
+                        FROM adjacency_claims a JOIN knots t
+                          ON t.knot_pk=a.target_knot_pk
+                        WHERE a.source_knot_pk=?{status_clause}
+                        GROUP BY t.canonical_id,a.status,a.claim_scope,a.source_id
+                        ORDER BY a.status,t.canonical_id LIMIT ?
+                    """
+                else:
+                    query = f"""
+                        SELECT s.canonical_id,a.status,a.claim_scope,a.source_id,
+                               NULL,min(a.graph_edge_id),NULL,count(*)
+                        FROM adjacency_claims a JOIN knots s
+                          ON s.knot_pk=a.source_knot_pk
+                        WHERE a.target_knot_pk=?{status_clause}
+                        GROUP BY s.canonical_id,a.status,a.claim_scope,a.source_id
+                        ORDER BY a.status,s.canonical_id LIMIT ?
+                    """
+                params = [knot_pk, *status_params, args.limit - len(rows)]
+                rows.extend(
+                    {
+                        "direction": direction,
+                        "neighbor": neighbor,
+                        "status": status,
+                        "scope": scope,
+                        "source": source,
+                        "crossing": crossing,
+                        "graph_edge_id": edge_id,
+                        "claim_id": claim_id,
+                        "claim_count": claim_count,
+                    }
+                    for neighbor, status, scope, source, crossing, edge_id, claim_id, claim_count in federation.execute(
+                        query, params
+                    )
+                )
+                if len(rows) >= args.limit:
+                    break
+        elif args.command == "catalogue-sources":
+            rows = [
+                {
+                    "source_id": source_id,
+                    "kind": kind,
+                    "retrieved_at": retrieved,
+                    "sha256": digest,
+                    "scope": scope,
+                    "url": url,
+                }
+                for source_id, kind, retrieved, digest, scope, url in federation.execute(
+                    "SELECT source_id,catalogue_kind,retrieved_at,source_sha256,source_scope,source_url FROM catalogue_sources ORDER BY source_id"
+                )
+            ]
+        elif args.command == "catalogue-coverage":
+            total, linked, represented, properties = federation.execute(
+                """
+                SELECT count(*),
+                       count(*) FILTER (WHERE EXISTS (SELECT 1 FROM graph_knot_links g WHERE g.knot_pk=k.knot_pk)),
+                       count(*) FILTER (WHERE EXISTS (SELECT 1 FROM representations r WHERE r.knot_pk=k.knot_pk)),
+                       count(*) FILTER (WHERE EXISTS (SELECT 1 FROM knot_properties p WHERE p.knot_pk=k.knot_pk))
+                FROM knots k
+                """
+            ).fetchone()
+            rows = [
+                {
+                    "catalogue_knots": total,
+                    "with_graph_link": linked,
+                    "with_representation": represented,
+                    "with_searchable_properties": properties,
+                    "graph_coverage_percent": f"{100 * linked / total:.3f}",
+                }
+            ]
+        else:
+            property_name, wanted_value = args.property
+            rows = [
+                {"knot_id": knot_id, "property": property_name, "value": value}
+                for knot_id, value in federation.execute(
+                    """
+                    SELECT k.canonical_id,v.value_text
+                    FROM property_definitions d JOIN property_values v USING(property_id)
+                    JOIN knot_properties p USING(property_id,value_id)
+                    JOIN knots k USING(knot_pk)
+                    WHERE d.property_name=? AND v.value_text=?
+                    ORDER BY k.crossing_number,k.canonical_id LIMIT ?
+                    """,
+                    (property_name, wanted_value, args.limit),
+                )
+            ]
+        federation.close()
         emit(rows, args.json)
         return
 
@@ -307,25 +702,29 @@ def main() -> None:
             identities = find_matching_representations(
                 fingerprints, args.fingerprint, args.limit
             )
-            rows = [
-                {
-                    "representation_id": identity,
-                    "knot_id": knot_id,
-                    "identification_class": identification_class,
-                    "stopping_key": key,
-                    "graph_node_id": node_id,
-                }
-                for identity, knot_id, identification_class, key, node_id in fingerprints.execute(
-                    f"""
+            rows = (
+                [
+                    {
+                        "representation_id": identity,
+                        "knot_id": knot_id,
+                        "identification_class": identification_class,
+                        "stopping_key": key,
+                        "graph_node_id": node_id,
+                    }
+                    for identity, knot_id, identification_class, key, node_id in fingerprints.execute(
+                        f"""
                     SELECT representation_id,knot_id,identification_class,
                            lower(hex(stopping_key)),graph_node_id
                     FROM representation_map
-                    WHERE representation_id IN ({','.join('?' for _ in identities)})
+                    WHERE representation_id IN ({",".join("?" for _ in identities)})
                     ORDER BY representation_id
                     """,
-                    identities,
-                )
-            ] if identities else []
+                        identities,
+                    )
+                ]
+                if identities
+                else []
+            )
         else:
             rows = [
                 {
@@ -347,7 +746,13 @@ def main() -> None:
         emit(rows, args.json)
         return
 
-    if args.command in {"identification-for-representation", "list-identification-gaps"}:
+    if args.command in {
+        "identification-for-representation",
+        "identification-for-graph",
+        "representations-for-knot",
+        "list-equivalence-candidates",
+        "list-identification-gaps",
+    }:
         identifications = identification_connection(args.identifications)
         if args.command == "identification-for-representation":
             rows = [
@@ -366,23 +771,118 @@ def main() -> None:
                     (args.representation_id,),
                 )
             ]
-            rows.extend(
-                {
-                    "kind": "candidate_only",
-                    "knot_id": knot_id,
-                    "evidence_class": "candidate",
-                    "status": f"invariant-rank-{rank}",
-                    "mirror_bit": mirror_bit,
-                }
-                for knot_id, mirror_bit, rank in identifications.execute(
-                    """
-                    SELECT candidate_knot_id,mirror_bit,candidate_rank
-                    FROM representation_knot_candidates
-                    WHERE representation_id=? ORDER BY candidate_rank,candidate_knot_id
-                    """,
-                    (args.representation_id,),
+            if not rows:
+                rows.extend(
+                    {
+                        "kind": "candidate_only",
+                        "knot_id": knot_id,
+                        "evidence_class": "candidate",
+                        "status": f"invariant-rank-{rank}",
+                        "mirror_bit": mirror_bit,
+                    }
+                    for knot_id, mirror_bit, rank in identifications.execute(
+                        """
+                        SELECT candidate_knot_id,mirror_bit,candidate_rank
+                        FROM representation_knot_candidates
+                        WHERE representation_id=? ORDER BY candidate_rank,candidate_knot_id
+                        """,
+                        (args.representation_id,),
+                    )
                 )
+        elif args.command == "identification-for-graph":
+            if args.key_or_node.isdigit():
+                predicate = "v.node_id=?"
+                parameter: Any = int(args.key_or_node)
+            else:
+                if len(args.key_or_node) != 64:
+                    raise ValueError("graph key must be 64 hexadecimal characters")
+                try:
+                    parameter = bytes.fromhex(args.key_or_node)
+                except ValueError as error:
+                    raise ValueError("graph key is not hexadecimal") from error
+                predicate = "v.rep_key=?"
+            rows = [
+                {
+                    "kind": "effective_mapping",
+                    "rep_key": key,
+                    "graph_node_id": node_id,
+                    "knot_id": knot_id,
+                    "evidence_class": evidence_class,
+                    "status": status,
+                    "mirror_bit": mirror_bit,
+                    "cc0_component": component,
+                }
+                for key, node_id, component, knot_id, mirror_bit, evidence_class, status in identifications.execute(
+                    f"""
+                    SELECT lower(hex(v.rep_key)),v.node_id,lower(hex(v.cc0_component_key)),
+                           m.knot_id,m.mirror_bit,m.evidence_class,m.mapping_status
+                    FROM graph_vertices v LEFT JOIN graph_vertex_knot_map m USING(rep_key)
+                    WHERE {predicate}
+                    """,
+                    (parameter,),
+                )
+            ]
+        elif args.command == "representations-for-knot":
+            knot_id = canonical_knot_id(args.name)
+            namespace_clause = (
+                "" if args.namespace == "all" else "AND representation_namespace=?"
             )
+            parameters: tuple[Any, ...] = (
+                (knot_id, args.limit)
+                if args.namespace == "all"
+                else (knot_id, args.namespace, args.limit)
+            )
+            rows = [
+                {
+                    "knot_id": found_knot,
+                    "namespace": namespace,
+                    "representation": reference,
+                    "rep_key": key,
+                    "graph_node_id": node_id,
+                    "mirror_bit": mirror_bit,
+                    "evidence_class": evidence_class,
+                    "status": status,
+                }
+                for found_knot, namespace, reference, key, node_id, mirror_bit, evidence_class, status in identifications.execute(
+                    f"""
+                    SELECT knot_id,representation_namespace,representation_ref,
+                           lower(hex(rep_key)),graph_node_id,mirror_bit,evidence_class,mapping_status
+                    FROM knot_representation_postings
+                    WHERE knot_id=? {namespace_clause}
+                    ORDER BY representation_namespace,representation_ref LIMIT ?
+                    """,
+                    parameters,
+                )
+            ]
+        elif args.command == "list-equivalence-candidates":
+            status_clause = "" if args.status == "all" else "WHERE c.status=?"
+            parameters = (
+                (args.limit,) if args.status == "all" else (args.status, args.limit)
+            )
+            rows = [
+                {
+                    "rank": rank,
+                    "status": status,
+                    "candidate_knot_id": knot_id,
+                    "left_rep_key": left,
+                    "right_rep_key": right,
+                    "common_target_key": target,
+                    "external_method": method,
+                }
+                for rank, status, knot_id, left, right, target, method in identifications.execute(
+                    f"""
+                    SELECT c.candidate_rank,c.status,c.candidate_knot_id,
+                           lower(hex(c.left_rep_key)),lower(hex(c.right_rep_key)),
+                           lower(hex(c.common_target_key)),
+                           (SELECT group_concat(DISTINCT x.method)
+                            FROM graph_equivalence_checks x
+                            WHERE x.candidate_id=c.candidate_id)
+                    FROM graph_equivalence_candidates c {status_clause}
+                    ORDER BY c.candidate_rank,c.candidate_id LIMIT ?
+                    """,
+                    parameters,
+                )
+            ]
         else:
             clauses = []
             if args.kind == "candidate":
@@ -417,7 +917,7 @@ def main() -> None:
 
     db = connection(args.maps)
     if args.command == "invariants-for-knot":
-        knot_id = args.name if args.name.startswith("knot:") else f"knot:{args.name}"
+        knot_id = canonical_knot_id(args.name)
         emit(invariant_rows(db, knot_id), args.json)
     elif args.command == "invariants-for-representation":
         identifications = identification_connection(args.identifications)
@@ -517,7 +1017,10 @@ def main() -> None:
                     (identity,),
                 ).fetchone()
                 key, node_id = graph_row if graph_row else (None, None)
-                if fingerprint_matches is not None and identity not in fingerprint_matches:
+                if (
+                    fingerprint_matches is not None
+                    and identity not in fingerprint_matches
+                ):
                     continue
                 features = dict(
                     db.execute(
@@ -572,14 +1075,26 @@ def main() -> None:
         emit(rows, args.json)
     elif args.command == "list-invariants":
         rows = [
-            {"name": name, "kind": "knot_invariant", "type": value_type, "scope": scope, "definition": definition}
+            {
+                "name": name,
+                "kind": "knot_invariant",
+                "type": value_type,
+                "scope": scope,
+                "definition": definition,
+            }
             for name, value_type, scope, definition in db.execute(
                 "SELECT invariant_id,value_type,scope,definition FROM invariant_definitions ORDER BY invariant_id"
             )
         ]
         if args.include_features:
             rows.extend(
-                {"name": name, "kind": "representation_feature", "type": "integer", "scope": "representation", "definition": definition}
+                {
+                    "name": name,
+                    "kind": "representation_feature",
+                    "type": "integer",
+                    "scope": "representation",
+                    "definition": definition,
+                }
                 for name, definition in db.execute(
                     "SELECT feature_id,definition FROM representation_feature_definitions ORDER BY feature_id"
                 )

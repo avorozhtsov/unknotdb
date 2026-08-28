@@ -82,6 +82,15 @@ $BIN import-planar-u1 input.sqlite output.sqlite \
   --model-dir models/q-grown-raster-axial-12-q254-frozen-20260824-v0
 ```
 
+An existing stopping point that is itself an unknot can be connected by an
+exact zero-CC planar trace.  This is distinct from metadata-only knot
+identification and updates the proof graph only after Rust replay:
+
+```bash
+$BIN import-planar-cc0 input.sqlite output.sqlite \
+  --source-key HEX --certificate trace.json --manifest import.tsv
+```
+
 For fixed catalogue witness corpora, `import-catalogue-planar` splits every
 multi-CC witness into one-CC graph edges.  After each CC it runs the pinned
 preprocessor and stores only the normalized stopping point.  The following
@@ -91,6 +100,21 @@ so crossing coordinates retain their original certificate meaning:
 ```bash
 $BIN import-catalogue-planar input.sqlite output.sqlite \
   --corpus stage1.json --corpus stage2.json --manifest import.tsv \
+  --oracle /path/to/python tools/q_policy_oracle.py \
+  --pgx-root /path/to/pgx-mcts-bench \
+  --model-dir models/q-grown-raster-axial-12-q254-frozen-20260824-v0
+```
+
+For catalogue claims whose source and one-crossing successor braidify to words
+with identical absolute generators, `import-catalogue-braid` compiles the exact
+single sign change into an ordinary replayed graph edge.  If the successor is
+not already connected, it is first staged through the exact descending
+fallback; the entire staged change is discarded unless the source bound is
+strictly improved:
+
+```bash
+$BIN import-catalogue-braid input.sqlite output.sqlite \
+  --cohort direct-braid.tsv --manifest import.tsv \
   --oracle /path/to/python tools/q_policy_oracle.py \
   --pgx-root /path/to/pgx-mcts-bench \
   --model-dir models/q-grown-raster-axial-12-q254-frozen-20260824-v0

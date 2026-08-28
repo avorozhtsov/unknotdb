@@ -3,9 +3,10 @@
 use crate::representation::BraidRepresentation;
 use crate::{RepKey, Result};
 use serde::Deserialize;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 pub const CERTIFICATE_FORMAT: &str = "unknotdb-labelled-reidemeister-trace-v0";
+pub const CERTIFICATE_FORMAT_V1: &str = "unknotdb-labelled-reidemeister-trace-v1";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 struct Endpoint {
@@ -51,9 +52,19 @@ struct CertificateMove {
     at: Option<String>,
     eliminated: Option<Vec<String>>,
     triple: Option<Vec<(String, usize)>>,
+    added: Option<serde_json::Value>,
+    signs: Option<HashMap<String, i8>>,
+    state: Option<Vec<StateCrossing>>,
     before_sha256: String,
     after_sha256: String,
     remaining_crossings: usize,
+}
+
+#[derive(Clone, Deserialize)]
+struct StateCrossing {
+    label: String,
+    sign: i8,
+    adjacent: Vec<(String, usize)>,
 }
 
 impl<'de> Deserialize<'de> for CertificateMove {
@@ -68,6 +79,9 @@ impl<'de> Deserialize<'de> for CertificateMove {
             at: Option<String>,
             eliminated: Option<Vec<String>>,
             triple: Option<Vec<(String, usize)>>,
+            added: Option<serde_json::Value>,
+            signs: Option<HashMap<String, i8>>,
+            state: Option<Vec<StateCrossing>>,
             before_sha256: String,
             after_sha256: String,
             remaining_crossings: usize,
@@ -78,6 +92,9 @@ impl<'de> Deserialize<'de> for CertificateMove {
             at: raw.at,
             eliminated: raw.eliminated,
             triple: raw.triple,
+            added: raw.added,
+            signs: raw.signs,
+            state: raw.state,
             before_sha256: raw.before_sha256,
             after_sha256: raw.after_sha256,
             remaining_crossings: raw.remaining_crossings,
@@ -109,6 +126,69 @@ impl<'de> Deserialize<'de> for Certificate {
 }
 
 impl Diagram {
+    fn from_state(state: &[StateCrossing]) -> Result<Self> {
+        let parse = |label: &str| -> Result<usize> {
+            Ok(label
+                .strip_prefix('x')
+                .ok_or("planar state label does not start with x")?
+                .parse()?)
+        };
+        let max_index = state
+            .iter()
+            .map(|crossing| parse(&crossing.label))
+            .collect::<Result<Vec<_>>>()?
+            .into_iter()
+            .max()
+            .ok_or("planar expanded state is empty")?;
+        let mut crossings = (0..=max_index)
+            .map(|index| Crossing {
+                sign: 0,
+                adjacent: [Endpoint {
+                    crossing: index,
+                    index: 0,
+                }; 4],
+                alive: false,
+            })
+            .collect::<Vec<_>>();
+        for item in state {
+            let index = parse(&item.label)?;
+            if item.adjacent.len() != 4 || crossings[index].alive {
+                return Err("planar expanded state has malformed/duplicate crossing".into());
+            }
+            crossings[index].alive = true;
+            crossings[index].sign = item.sign;
+            for (slot, (label, endpoint_index)) in item.adjacent.iter().enumerate() {
+                if *endpoint_index >= 4 {
+                    return Err("planar expanded endpoint index is outside 0..4".into());
+                }
+                crossings[index].adjacent[slot] = Endpoint {
+                    crossing: parse(label)?,
+                    index: *endpoint_index,
+                };
+            }
+        }
+        for (crossing_index, crossing) in crossings.iter().enumerate() {
+            if !crossing.alive {
+                continue;
+            }
+            for (index, endpoint) in crossing.adjacent.iter().enumerate() {
+                let peer = crossings
+                    .get(endpoint.crossing)
+                    .ok_or("planar expanded endpoint crossing is absent")?;
+                if !peer.alive
+                    || peer.adjacent[endpoint.index]
+                        != (Endpoint {
+                            crossing: crossing_index,
+                            index,
+                        })
+                {
+                    return Err("planar expanded state adjacency is not reciprocal".into());
+                }
+            }
+        }
+        Ok(Self { crossings })
+    }
+
     fn from_braid(input: &BraidRepresentation) -> Result<Self> {
         input.validate()?;
         if input.cyclic_band_generators {
@@ -182,6 +262,98 @@ impl Diagram {
             .iter()
             .filter(|crossing| crossing.alive)
             .count()
+    }
+
+    fn is_endpoint_reindexing_of(&self, source: &Self) -> bool {
+        if self.crossings.len() != source.crossings.len() {
+            return false;
+        }
+        let mut candidates = vec![Vec::<usize>::new(); source.crossings.len()];
+        for (index, options) in candidates.iter_mut().enumerate() {
+            let old = &source.crossings[index];
+            let new = &self.crossings[index];
+            if old.alive != new.alive {
+                return false;
+            }
+            if !old.alive {
+                continue;
+            }
+            for rotation in 0..4 {
+                if (0..4).all(|slot| {
+                    new.adjacent[(slot + rotation) % 4].crossing == old.adjacent[slot].crossing
+                }) {
+                    options.push(rotation);
+                }
+            }
+            if options.is_empty() {
+                return false;
+            }
+        }
+
+        fn search(
+            source: &Diagram,
+            target: &Diagram,
+            candidates: &[Vec<usize>],
+            rotations: &mut [Option<usize>],
+        ) -> bool {
+            let Some(start) = source
+                .crossings
+                .iter()
+                .enumerate()
+                .filter(|(index, crossing)| crossing.alive && rotations[*index].is_none())
+                .min_by_key(|(index, _)| candidates[*index].len())
+                .map(|(index, _)| index)
+            else {
+                return true;
+            };
+            for &initial in &candidates[start] {
+                let mut pending = vec![(start, initial)];
+                let mut added = Vec::new();
+                let mut valid = true;
+                while let Some((crossing, rotation)) = pending.pop() {
+                    if let Some(existing) = rotations[crossing] {
+                        if existing != rotation {
+                            valid = false;
+                            break;
+                        }
+                        continue;
+                    }
+                    if !candidates[crossing].contains(&rotation) {
+                        valid = false;
+                        break;
+                    }
+                    rotations[crossing] = Some(rotation);
+                    added.push(crossing);
+                    for slot in 0..4 {
+                        let old_peer = source.crossings[crossing].adjacent[slot];
+                        let new_peer = target.crossings[crossing].adjacent[(slot + rotation) % 4];
+                        if old_peer.crossing != new_peer.crossing {
+                            valid = false;
+                            break;
+                        }
+                        pending
+                            .push((old_peer.crossing, (new_peer.index + 4 - old_peer.index) % 4));
+                    }
+                    if !valid {
+                        break;
+                    }
+                }
+                if valid && search(source, target, candidates, rotations) {
+                    return true;
+                }
+                for crossing in added {
+                    rotations[crossing] = None;
+                }
+            }
+            false
+        }
+
+        search(
+            source,
+            self,
+            &candidates,
+            &mut vec![None; source.crossings.len()],
+        )
     }
 
     fn parse_label(&self, label: &str) -> Result<usize> {
@@ -503,7 +675,7 @@ fn parse_sha256(value: &str) -> Result<RepKey> {
 
 pub fn verify_certificate(source: &BraidRepresentation, bytes: &[u8]) -> Result<()> {
     let certificate: Certificate = serde_json::from_slice(bytes)?;
-    if certificate.format != CERTIFICATE_FORMAT {
+    if certificate.format != CERTIFICATE_FORMAT && certificate.format != CERTIFICATE_FORMAT_V1 {
         return Err(format!("unsupported planar certificate `{}`", certificate.format).into());
     }
     let final_checkpoint = certificate
@@ -563,6 +735,125 @@ pub fn verify_certificate(source: &BraidRepresentation, bytes: &[u8]) -> Result<
                     };
                 }
                 diagram.reidemeister_iii(triple)?;
+            }
+            "RI+" | "RII+" => {
+                if certificate.format != CERTIFICATE_FORMAT_V1 {
+                    return Err("inverse planar moves require certificate format v1".into());
+                }
+                let expected_added = if step.move_ == "RI+" { 1 } else { 2 };
+                let raw_added = step
+                    .added
+                    .as_ref()
+                    .ok_or("inverse move has no added labels")?;
+                let added_labels: Vec<String> = if expected_added == 1 {
+                    vec![raw_added
+                        .as_str()
+                        .ok_or("RI+ added label is not a string")?
+                        .to_owned()]
+                } else {
+                    raw_added
+                        .as_array()
+                        .ok_or("RII+ added labels are not an array")?
+                        .iter()
+                        .map(|value| {
+                            value
+                                .as_str()
+                                .map(str::to_owned)
+                                .ok_or_else(|| "RII+ added label is not a string".into())
+                        })
+                        .collect::<Result<_>>()?
+                };
+                if added_labels.len() != expected_added {
+                    return Err("inverse move added-label count is inconsistent".into());
+                }
+                let mut target = Diagram::from_state(
+                    step.state
+                        .as_deref()
+                        .ok_or("inverse move has no expanded state")?,
+                )?;
+                while target.crossings.len() < diagram.crossings.len() {
+                    let index = target.crossings.len();
+                    target.crossings.push(Crossing {
+                        sign: 0,
+                        adjacent: [Endpoint {
+                            crossing: index,
+                            index: 0,
+                        }; 4],
+                        alive: false,
+                    });
+                }
+                if target.alive_count() != diagram.alive_count() + expected_added {
+                    return Err("inverse move expanded-state crossing count is wrong".into());
+                }
+                let expected_before = diagram.state_sha256();
+                let mut accepted = false;
+                for label in &added_labels {
+                    let mut reduced = target.clone();
+                    let anchor = reduced.parse_label(label)?;
+                    let mut eliminated = reduced.reidemeister_i_or_ii(anchor);
+                    eliminated.sort_by_key(|index| Diagram::label(*index));
+                    let eliminated_labels: Vec<_> =
+                        eliminated.into_iter().map(Diagram::label).collect();
+                    let mut expected_labels = added_labels.clone();
+                    expected_labels.sort();
+                    if eliminated_labels == expected_labels
+                        && reduced.state_sha256() == expected_before
+                    {
+                        accepted = true;
+                        break;
+                    }
+                }
+                if !accepted {
+                    return Err(format!(
+                        "planar move {move_index} is not an exact inverse RI/RII expansion"
+                    )
+                    .into());
+                }
+                diagram = target;
+            }
+            "Orient" => {
+                if certificate.format != CERTIFICATE_FORMAT_V1 {
+                    return Err("orientation refresh requires certificate format v1".into());
+                }
+                let mut target = Diagram::from_state(
+                    step.state
+                        .as_deref()
+                        .ok_or("Orient has no exact target state")?,
+                )?;
+                while target.crossings.len() < diagram.crossings.len() {
+                    let index = target.crossings.len();
+                    target.crossings.push(Crossing {
+                        sign: 0,
+                        adjacent: [Endpoint {
+                            crossing: index,
+                            index: 0,
+                        }; 4],
+                        alive: false,
+                    });
+                }
+                let signs = step.signs.as_ref().ok_or("Orient has no sign map")?;
+                let alive_labels: HashSet<_> = diagram
+                    .crossings
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, crossing)| crossing.alive)
+                    .map(|(index, _)| Diagram::label(index))
+                    .collect();
+                if signs.keys().cloned().collect::<HashSet<_>>() != alive_labels
+                    || signs.values().any(|sign| !matches!(sign, -1 | 1))
+                {
+                    return Err("Orient sign map does not cover the live diagram".into());
+                }
+                if !target.is_endpoint_reindexing_of(&diagram) {
+                    return Err("Orient is not a cyclic endpoint reindexing".into());
+                }
+                for (index, after) in target.crossings.iter().enumerate() {
+                    if after.alive && signs.get(&Diagram::label(index)).copied() != Some(after.sign)
+                    {
+                        return Err("Orient misstated a crossing sign".into());
+                    }
+                }
+                diagram = target;
             }
             other => return Err(format!("unknown planar move `{other}`").into()),
         }

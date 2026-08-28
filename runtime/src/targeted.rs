@@ -417,6 +417,9 @@ fn attestation(report: &crate::policy::PreprocessingReport) -> Result<PolicyStop
         PolicyStopReason::TerminalRepresentation => {
             Ok(PolicyStopAttestation::Terminal { audit_sha256 })
         }
+        PolicyStopReason::CapacityFallback => {
+            Ok(PolicyStopAttestation::CapacityFallback { audit_sha256 })
+        }
         _ => Err("incomplete preprocessing has no graph attestation".into()),
     }
 }
@@ -427,6 +430,7 @@ fn preferred_cc(attestation: PolicyStopAttestation) -> Result<Option<SemanticAct
             Ok(Some(SemanticAction::decode_u63(action)?))
         }
         PolicyStopAttestation::Terminal { .. } => Ok(None),
+        PolicyStopAttestation::CapacityFallback { .. } => Ok(None),
     }
 }
 

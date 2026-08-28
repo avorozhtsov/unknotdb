@@ -10,6 +10,8 @@ pub const REPRESENTATION_CODEC: &str = "unknotdb-braid-cylinder-le-v0";
 pub const PACKED_REPRESENTATION_CODEC: &str = "unknotdb-braid-cylinder-packed-v1";
 pub const NORMALIZER_VERSION: &str = "mirror-writhe-word-necklace-v1";
 pub const KEY_SPEC: &str = "sha256(mirror-orbit-normalized-unknotdb-braid-cylinder-v1)";
+pub const EXACT_CHECKPOINT_KEY_SPEC: &str =
+    "sha256(UNKNOTDB_EXACT_BRAID_CHECKPOINT_V0\\0 || representation-v0-encoding)";
 pub const ACTION_CODEC: &str = "unknotdb-semantic-action-u63-v0";
 pub const PROGRAM_CODEC: &str = "unknotdb-semantic-program-le-v0";
 pub const CHECKPOINTED_PROGRAM_CODEC: &str = "unknotdb-semantic-checkpoint-program-le-v1";
@@ -56,6 +58,18 @@ pub struct NormalizedRepresentation {
 }
 
 impl BraidRepresentation {
+    /// Domain-separated identity for an exact, possibly unnormalized proof
+    /// checkpoint. Unlike [`Self::normalize`], this does not quotient cyclic
+    /// origin or mirror reflection.
+    pub fn exact_checkpoint_key(&self) -> Result<RepKey> {
+        self.validate()?;
+        let encoded = self.encode()?;
+        let mut material = Vec::with_capacity(36 + encoded.len());
+        material.extend_from_slice(b"UNKNOTDB_EXACT_BRAID_CHECKPOINT_V0\0");
+        material.extend_from_slice(&encoded);
+        sha256_key(&material)
+    }
+
     pub fn validate(&self) -> Result<()> {
         if self.strands == 0 {
             return Err("a braid must have at least one strand".into());

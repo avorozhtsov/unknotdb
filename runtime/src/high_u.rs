@@ -47,7 +47,7 @@ pub fn improve_high_u_with_templates(
     graph: &mut PopulationGraph,
     templates: &[AnchoredTemplateProposal],
     snapshot_id: &str,
-    selected_keys: &[RepKey],
+    selected_keys: Option<&[RepKey]>,
     limits: HighUTemplateLimits,
 ) -> Result<HighUTemplateRun> {
     let HighUTemplateLimits {
@@ -57,17 +57,20 @@ pub fn improve_high_u_with_templates(
         max_anchors_per_node,
     } = limits;
     if snapshot_id.is_empty()
-        || selected_keys.is_empty()
         || cohort_limit == 0
         || max_templates == 0
         || max_anchors_per_node == 0
     {
         return Err("anchored-template run limits must be positive".into());
     }
-    let allowed: HashSet<_> = selected_keys.iter().copied().collect();
+    let allowed = selected_keys.map(|keys| keys.iter().copied().collect::<HashSet<_>>());
     let mut selected = graph.ranked_quality_seeds(graph.node_count())?;
-    selected
-        .retain(|seed| seed.u_upper_bound >= min_u && allowed.contains(&seed.representation.key));
+    selected.retain(|seed| {
+        seed.u_upper_bound >= min_u
+            && allowed
+                .as_ref()
+                .is_none_or(|keys| keys.contains(&seed.representation.key))
+    });
     selected.truncate(cohort_limit);
     let templates = &templates[..templates.len().min(max_templates)];
     let before_edges = graph.edge_count();
@@ -853,6 +856,9 @@ fn attestation(report: &PreprocessingReport) -> Result<PolicyStopAttestation> {
         }
         PolicyStopReason::TerminalRepresentation => {
             Ok(PolicyStopAttestation::Terminal { audit_sha256 })
+        }
+        PolicyStopReason::CapacityFallback => {
+            Ok(PolicyStopAttestation::CapacityFallback { audit_sha256 })
         }
         _ => Err("incomplete high-U preprocessing has no attestation".into()),
     }

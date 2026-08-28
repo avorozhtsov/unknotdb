@@ -42,6 +42,19 @@ def canonical_json(value: Any) -> str:
     return json.dumps(value, separators=(",", ":"), sort_keys=True)
 
 
+def stopping_key_blob(value: bytes | str | None) -> bytes | None:
+    if value is None:
+        return None
+    if isinstance(value, bytes):
+        if len(value) != 32:
+            raise ValueError("binary stopping key is not 32 bytes")
+        return value
+    result = bytes.fromhex(value)
+    if len(result) != 32:
+        raise ValueError("hex stopping key is not 32 bytes")
+    return result
+
+
 def load_representations(paths: list[Path]) -> dict[str, tuple[tuple[int, ...], int]]:
     result: dict[str, tuple[tuple[int, ...], int]] = {}
     for path in paths:
@@ -58,6 +71,11 @@ def load_representations(paths: list[Path]) -> dict[str, tuple[tuple[int, ...], 
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--source-sidecar", type=Path, required=True)
+    parser.add_argument(
+        "--mapping-sidecar",
+        type=Path,
+        help="newer graph-pinned identification sidecar; defaults to source-sidecar",
+    )
     parser.add_argument("--corpus-json", type=Path, action="append", required=True)
     parser.add_argument("--rf-src", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
@@ -68,23 +86,50 @@ def main() -> None:
 
     representations = load_representations(args.corpus_json)
     source = sqlite3.connect(f"file:{args.source_sidecar}?mode=ro", uri=True)
-    source_meta = dict(source.execute("SELECT key,value FROM meta"))
+    mapping_path = args.mapping_sidecar or args.source_sidecar
+    mapping = sqlite3.connect(f"file:{mapping_path}?mode=ro", uri=True)
+    mapping_meta = dict(mapping.execute("SELECT key,value FROM meta"))
+    representation_columns = {
+        row[1] for row in mapping.execute("PRAGMA table_info(representations)")
+    }
+    status_column = (
+        "graph_status" if "graph_status" in representation_columns else "status"
+    )
     graph_rows = list(
-        source.execute(
-            "SELECT representation_id,stopping_key,graph_node_id,graph_u_upper,status "
-            "FROM representations ORDER BY representation_id"
+        mapping.execute(
+            "SELECT representation_id,stopping_key,graph_node_id,graph_u_upper,"
+            f"{status_column} FROM representations ORDER BY representation_id"
         )
     )
-    identification_rows = list(
-        source.execute(
-            """
-            SELECT representation_id,canonical_name,count(*)
-            FROM identifications
-            GROUP BY representation_id,canonical_name
-            ORDER BY representation_id,canonical_name
-            """
+    mapping_tables = {
+        row[0]
+        for row in mapping.execute(
+            "SELECT name FROM sqlite_master WHERE type IN ('table','view')"
         )
-    )
+    }
+    if "effective_representation_knot_map" in mapping_tables:
+        identification_rows = list(
+            mapping.execute(
+                """
+                SELECT e.representation_id,k.canonical_name,count(*)
+                FROM effective_representation_knot_map e
+                JOIN knot_ids k USING(knot_id)
+                GROUP BY e.representation_id,k.canonical_name
+                ORDER BY e.representation_id,k.canonical_name
+                """
+            )
+        )
+    else:
+        identification_rows = list(
+            mapping.execute(
+                """
+                SELECT representation_id,canonical_name,count(*)
+                FROM identifications
+                GROUP BY representation_id,canonical_name
+                ORDER BY representation_id,canonical_name
+                """
+            )
+        )
     source_invariants = {
         name: {
             "crossing_number_catalogue": ("integer", str(crossings)),
@@ -97,12 +142,15 @@ def main() -> None:
         )
     }
     source.close()
+    mapping.close()
 
     by_representation: dict[str, tuple[str, int]] = {}
     by_knot: dict[str, list[str]] = defaultdict(list)
     for representation_id, canonical_name, evidence_count in identification_rows:
         if representation_id in by_representation:
-            raise ValueError(f"representation has multiple knot IDs: {representation_id}")
+            raise ValueError(
+                f"representation has multiple knot IDs: {representation_id}"
+            )
         knot_id = f"knot:{canonical_name}"
         by_representation[representation_id] = (knot_id, int(evidence_count))
         by_knot[knot_id].append(representation_id)
@@ -165,7 +213,9 @@ def main() -> None:
         provenance = "RF bundled table value with source hash in parent sidecar"
         values = {
             invariant_id: (value_type, value, provenance)
-            for invariant_id, (value_type, value) in source_invariants.get(name, {}).items()
+            for invariant_id, (value_type, value) in source_invariants.get(
+                name, {}
+            ).items()
         }
         if "alexander" in values:
             alexander_pairs = json.loads(values["alexander"][1])
@@ -179,7 +229,14 @@ def main() -> None:
             )
             values["determinant"] = (
                 "integer",
-                str(abs(sum(coefficient * (-1) ** (exponent % 2) for exponent, coefficient in alexander_pairs))),
+                str(
+                    abs(
+                        sum(
+                            coefficient * (-1) ** (exponent % 2)
+                            for exponent, coefficient in alexander_pairs
+                        )
+                    )
+                ),
                 "exactly derived from the recomputed Alexander polynomial",
             )
         genus_lower = max((exponent for exponent, _ in alexander_pairs), default=0) // 2
@@ -376,10 +433,18 @@ def main() -> None:
             LEFT JOIN representation_knot_map k USING(representation_id);
         """
     )
+    graph_snapshot_sha256 = mapping_meta.get(
+        "graph_snapshot_sha256", mapping_meta.get("snapshot_sha256")
+    )
+    if graph_snapshot_sha256 is None:
+        raise ValueError(
+            "source sidecar does not pin graph_snapshot_sha256 or snapshot_sha256"
+        )
     metadata = {
         "schema": "unknotdb-lookup-maps-v1",
         "source_sidecar_sha256": file_sha256(args.source_sidecar),
-        "graph_snapshot_sha256": source_meta["snapshot_sha256"],
+        "mapping_sidecar_sha256": file_sha256(mapping_path),
+        "graph_snapshot_sha256": graph_snapshot_sha256,
         "proof_status": "metadata-only-not-part-of-proof-graph",
         "knot_id_scheme": "knot:<canonical-catalogue-name>-v1",
         "invariant_policy": "promote-only-on-exact-agreement-across-mapped-representations",
@@ -399,7 +464,7 @@ def main() -> None:
         [
             (
                 identity,
-                bytes.fromhex(key) if key else None,
+                stopping_key_blob(key),
                 node_id,
                 u_upper,
                 status,
@@ -419,14 +484,18 @@ def main() -> None:
     for identity, (knot_id, _) in by_representation.items():
         key = graph_by_rep.get(identity)
         if key:
-            vertex_support[bytes.fromhex(key)][knot_id] += 1
+            vertex_support[stopping_key_blob(key)][knot_id] += 1
     vertex_rows = []
     for key, support in vertex_support.items():
         if len(support) != 1:
-            raise ValueError(f"canonical graph vertex has conflicting knot IDs: {key.hex()}")
+            raise ValueError(
+                f"canonical graph vertex has conflicting knot IDs: {key.hex()}"
+            )
         knot_id, count = next(iter(support.items()))
         vertex_rows.append((key, knot_id, count))
-    connection.executemany("INSERT INTO graph_vertex_knot_map VALUES (?,?,?)", vertex_rows)
+    connection.executemany(
+        "INSERT INTO graph_vertex_knot_map VALUES (?,?,?)", vertex_rows
+    )
     connection.executemany(
         "INSERT INTO invariant_definitions VALUES (?,?,?,?)",
         [
@@ -462,7 +531,9 @@ def main() -> None:
             for identity, invariant_id, value_type, value, provenance in overrides
         ],
     )
-    connection.executemany("INSERT INTO invariant_conflicts VALUES (?,?,?,?)", conflicts)
+    connection.executemany(
+        "INSERT INTO invariant_conflicts VALUES (?,?,?,?)", conflicts
+    )
     connection.executemany(
         "INSERT INTO representation_feature_definitions VALUES (?,?)",
         sorted(feature_definitions.items()),
@@ -514,14 +585,14 @@ def main() -> None:
     report = f"""# Unknot DB lookup maps v1
 
 - Sidecar: `{args.output}` ({args.output.stat().st_size:,} bytes)
-- Source representations: {counts['representations']:,}
-- `representation → knot_id`: {counts['representation_knot_mappings']:,}
-- `canonical graph vertex → knot_id`: {counts['graph_vertex_knot_mappings']:,}
-- Stable knot IDs: {counts['knot_ids']:,}
-- Deduplicated knot-level invariant values: {counts['knot_invariant_values']:,}
-- Effective `representation → invariant` rows exposed by the view: {counts['effective_representation_invariants']:,}
-- Cross-representation invariant conflicts: {counts['conflicts']:,}
-- Representation-specific overrides: {counts['overrides']:,}
+- Source representations: {counts["representations"]:,}
+- `representation → knot_id`: {counts["representation_knot_mappings"]:,}
+- `canonical graph vertex → knot_id`: {counts["graph_vertex_knot_mappings"]:,}
+- Stable knot IDs: {counts["knot_ids"]:,}
+- Deduplicated knot-level invariant values: {counts["knot_invariant_values"]:,}
+- Effective `representation → invariant` rows exposed by the view: {counts["effective_representation_invariants"]:,}
+- Cross-representation invariant conflicts: {counts["conflicts"]:,}
+- Representation-specific overrides: {counts["overrides"]:,}
 
 Large polynomial values are stored once per `knot_id`; `representation_invariant_map` is a view, so it behaves like the requested map without copying Alexander/Jones data for every representation. Values are promoted to knot scope only when all available provenance-bearing values agree across mapped source representations. Signatures and missing Alexander/determinant values were recomputed; bundled Alexander/Jones/determinant values retain their table provenance. Any future disagreement is retained in `invariant_conflicts` and `representation_invariant_overrides` rather than overwritten.
 
