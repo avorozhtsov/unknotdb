@@ -26,6 +26,46 @@ Today the graph is centered on unknotting-number witnesses. The planned
 extension is a **Gordian proof graph** whose paths witness upper bounds on the
 crossing-change distance between arbitrary knot types.
 
+## Data and research foundations
+
+UnknotDB builds on existing knot tables, computational archives, and published
+results. The important upstream sources are linked here so that the provenance
+is visible before the implementation details:
+
+**Imported databases and computational data**
+
+- [KnotInfo](https://knotinfo.org/) supplies canonical names, representations,
+  invariants, and published unknotting-number intervals. The federated
+  catalogue imports a hash-pinned
+  [KnotInfo workbook](https://knotinfo.org/knotinfo_data_complete.xls) through
+  13 crossings.
+- Mark Brittenham's exhaustive crossing-change archives provide the imported
+  [12-crossing sliced data](https://www.math.unl.edu/~mbrittenham2/unknottingsearch/database/12_crossing_knots_sliced.zip),
+  [13-crossing sliced data](https://www.math.unl.edu/~mbrittenham2/unknottingsearch/database/13_crossing_knots_sliced.zip),
+  and [13-crossing SnapPy identifications](https://www.math.unl.edu/~mbrittenham2/unknottingsearch/database/13_crossing_knots.zip).
+- The Dranowski--Guo--Kabkov--Tubbenhauer
+  [computational repository](https://github.com/dtubbenhauer/unknot) supplies
+  corrected, certificate-indexed lower-bound data associated with *Machine
+  learning methods and unknotting numbers*.
+
+**Research used as a basis or regression target**
+
+- Applebaum et al.,
+  [*The unknotting number, hard unknot diagrams, and reinforcement learning*](https://arxiv.org/abs/2409.09032),
+  motivates the hard-diagram and learning setting and supplies published
+  unknotting claims used as regression targets.
+- Brittenham and Hermiller,
+  [*Unknotting number is not additive under connected sum*](https://arxiv.org/abs/2506.24088),
+  supplies the connected-sum counterexample and named proof-chain targets.
+- Wang and Zhang,
+  [*A remark on the counterexample to the unknotting number conjecture*](https://arxiv.org/abs/2507.14265),
+  supplies the direct five-crossing construction replayed as a proof cube.
+
+These sources provide data, claims, diagrams, or candidate move sequences; they
+do not bypass UnknotDB's trust boundary. Imported claims remain
+provenance-bearing catalogue data until an explicit move program has been
+independently replayed.
+
 ## The three-project system
 
 | Repository | Responsibility |
@@ -229,8 +269,20 @@ pins the exact SHA-256 of `proof.sqlite`; metadata never changes proof values.
 
 Download the access-controlled
 [Google Drive archive](https://drive.google.com/file/d/17Oc02uP1m_HREjN0Q85JvNi4zvntHEfJ/view?usp=drivesdk)
-(`56,577,912` bytes, SHA-256
+(`56,577,912` bytes = **56.58 MB** or 53.96 MiB, SHA-256
 `b997f0ee9d7fdeab95f6a934a2892aefc2dae94bce76c5f5389574b5d8a48283`).
+
+The archive expands to **229.14 MB** (218.53 MiB), including the six database
+components below plus checksums, manifests, and validation reports:
+
+| Component | Role | Size |
+|---|---|---:|
+| `proof.sqlite` | immutable proof graph | 29.14 MB |
+| `identification.sqlite` | representation-to-knot evidence | 35.95 MB |
+| `lookup.sqlite` | invariant and identifier lookup | 9.01 MB |
+| `fingerprints.sqlite` | representation fingerprints | 11.34 MB |
+| `federation.sqlite` | KnotInfo and Brittenham catalogue | 122.66 MB |
+| `provenance.sqlite` | source and derivation records | 17.45 MB |
 
 ```bash
 cd release-v0.10.1
