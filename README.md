@@ -1,14 +1,53 @@
 # unknotdb
 
-**Machine-checked certificates for knot theory.**
+**A replayable proof graph and command-line knowledge base for knot theory.**
 
-Scope note: despite the name, the certificate machinery is not specific to
-unknotting. The same verifier covers slice genus, Gordian distance, braid index
-and unlinking — see [`schema/claim-types.md`](schema/claim-types.md).
+UnknotDB stores a graph whose vertices are concrete knot representations and
+whose edges carry explicit, machine-checkable move programs. A path to the
+unknot with `k` crossing changes is a witness for the upper bound `u(K) <= k`.
+The graph also carries useful sidecars: knot identifications, invariants,
+representation features, provenance, routing objectives, lower-bound claims,
+and training labels. A database miss means only that the current snapshot does
+not cover the query; it is not a mathematical lower bound.
 
-Every unknotting-number bound in the literature is currently an assertion plus a
-citation. KnotInfo stores `[2,3]` in a cell and links to a paper; the paper prints
-a PD code in a LaTeX appendix. Nothing is replayable.
+The main user-facing product is the `unknotdb` CLI. It is designed to answer
+questions such as:
+
+- Which knot does this representation describe, and which representations are
+  known for a named knot?
+- Which invariants and representation-dependent features are available?
+- Is there a replayable unknotting witness, and what upper bound does it prove?
+- How can a representation be converted, normalized, or mapped into the proof
+  graph?
+- Which knots or representations match a collection of invariant, fingerprint,
+  or catalogue constraints?
+
+Today the graph is centered on unknotting-number witnesses. The planned
+extension is a **Gordian proof graph** whose paths witness upper bounds on the
+crossing-change distance between arbitrary knot types.
+
+## The three-project system
+
+| Repository | Responsibility |
+|---|---|
+| [**rf-knots**](https://github.com/avorozhtsov/rf-knots) | The knot environments and neural models. UnknotDB uses a pinned RF Knots policy during bounded preprocessing to reduce representations before graph lookup and insertion. |
+| [**pgx-mcts-bench**](https://github.com/avorozhtsov/pgx-mcts-bench) | The MCTS and training machinery used to learn and search with those models. |
+| **unknotdb** | The durable evidence layer: representations, proof programs, derived routes, identifiers, invariants, and other sidecars. |
+
+The dependency is intentionally two-way at the data level. RF Knots models help
+preprocess representations so equivalent or unnecessarily large states do not
+inflate the graph. In return, UnknotDB exports replay-derived supervision for RF
+Knots and is intended to supply training data to **RM Nodes**. Learned policies
+may propose routes, but only independently replayed programs enter the proof
+graph as evidence.
+
+Despite the name, the certificate machinery is not specific to unknotting. The
+same verifier covers slice genus, Gordian distance, braid index and unlinking —
+see [`schema/claim-types.md`](schema/claim-types.md).
+
+Most unknotting-number bounds in existing tables are assertions plus citations.
+KnotInfo may store `[2,3]` in a cell and link to a paper, while the concrete
+diagram and transformations remain embedded in prose or an appendix.
 
 unknotdb stores the **witness**: an explicit sequence of moves that a small,
 dependency-free program re-checks from scratch. Certificates live in a git repo,
@@ -109,6 +148,47 @@ The production braid origin/key/action convention is normative in
 The mandatory initial-only reducer and normalization-only policy transitions are specified in
 [`schema/preprocessing-v0.md`](schema/preprocessing-v0.md).
 
+## Minimum-CC and L1000 routing
+
+Semantic proof length is a separate derived objective from `U_upper`.  The
+routing sidecar keeps the current minimum-CC pointer, the shortest semantic
+route at that minimum CC, the scalar `1000*CC + semantic_moves` route, and a
+small exact-CC frontier without changing the proof snapshot:
+
+```bash
+runtime/target/release/unknotdb-runtime build-routing-sidecar \
+  proof.sqlite routing.sqlite
+runtime/target/release/unknotdb-runtime show-routing \
+  proof.sqlite routing.sqlite NODE_ID_OR_64_HEX_REP_KEY
+```
+
+The exact cost and tie contracts are in
+[`schema/routing-sidecar-v1.md`](schema/routing-sidecar-v1.md).
+
+## Replay-derived training data
+
+`export-graph-supervision` turns the shortest replay-verified minimum-CC routes
+into a snapshot-pinned SQLite dataset without changing the graph or policy:
+
+```bash
+runtime/target/release/unknotdb-runtime export-graph-supervision \
+  proof.sqlite routing.sqlite graph-supervision.sqlite
+```
+
+The `preprocessor_labels` and `cc_solver_labels` views are disjoint tasks;
+`preprocessor_stops` supplies the matching termination states without inventing
+a fake semantic action. Each label retains the exact physical state in which
+its anchored action is legal; all provenance occurrences and alternative
+replay-valid labels are preserved.
+See [`schema/graph-supervision-v1.md`](schema/graph-supervision-v1.md).
+
+For CC-policy training, `export-cc-frontier-supervision` instead replays every
+usable one-CC edge and stores a three-way judgement: all current minimum-CC
+actions are accepted, completed worse routes are comparisons, and absent
+actions remain unknown. Native serial controllers may use up to five internal
+nonsemantic actions before the requested semantic CC. See
+[`schema/cc-frontier-supervision-v0.md`](schema/cc-frontier-supervision-v0.md).
+
 ## Coherent graph release bundle
 
 `v0.10.1` is the current coherent pre-release bundle on the path to public v1.
@@ -188,6 +268,60 @@ The separate braid-fingerprint sidecar records `scope`, `valid_under`, and
 `safe_use` for every value. Its reverse postings support candidate generation
 and ranking; they are never interpreted as general knot invariants or proofs.
 
+## Cited lower bounds
+
+`tools/build_dgkt_lower_bounds.py` imports the corrected lower-bound results of
+Dranowski--Guo--Kabkov--Tubbenhauer into a separate, provenance-bearing sidecar.
+The import pins the exact commit, tree and artifact hashes from their
+[computational repository](https://github.com/dtubbenhauer/unknot), names the
+associated work *Machine learning methods and unknotting numbers*, and retains
+both `CITATION.cff` and `ERRATUM.md` pointers. Withdrawn Owens claims are not
+imported.
+
+```bash
+python3 tools/build_dgkt_lower_bounds.py \
+  --source-root /clean/checkout/of/dtubbenhauer/unknot \
+  --output outputs/unknotdb-dgkt-lower-bounds-v0.sqlite \
+  --report outputs/unknotdb-dgkt-lower-bounds-v0-report.json
+
+tools/unknotdb_cli.py lower-bound-for-knot 11n3
+tools/unknotdb_cli.py find-knots-by-lower-bound --min 3 --exact-only
+tools/unknotdb_cli.py lower-bound-sources
+```
+
+These rows are `externally_attested`, not proof-graph certificates. The importer
+checks source consistency and exact certificate pointers, but promotes a claim
+to `verified` only after an independent mathematical recomputation. See
+[`schema/lower-bound-sidecar-v0.md`](schema/lower-bound-sidecar-v0.md).
+
+Upper witnesses are reconstructed separately and admitted only after Rust
+replay. `run_dgkt_witness_campaign.py` gives every knot an independent timeout,
+durable item artifact and deterministic shard, so a hard diagram cannot block
+the cohort. Exact intervals target `u_lower`; range intervals target the cited
+`retained_upper` without being mislabeled as exact.
+
+```bash
+tools/run_dgkt_witness_campaign.py \
+  --catalogue outputs/unknotdb-dgkt-lower-bounds-v0.sqlite \
+  --graph proof.sqlite --crossings 13 --interval-kind exact \
+  --output-dir outputs/dgkt/items --combined-output outputs/dgkt/shard0.json \
+  --manifest outputs/dgkt/shard0.jsonl --worker-python /path/to/python \
+  --per-knot-timeout 30 --shard-count 4 --shard-index 0
+
+runtime/target/release/unknotdb-runtime import-catalogue-planar \
+  proof.sqlite proof-with-dgkt.sqlite --corpus outputs/dgkt/shard0.json \
+  --manifest outputs/dgkt-import.tsv --oracle /path/to/python \
+  tools/q_policy_oracle.py --pgx-root /path/to/pgx-mcts-bench \
+  --model-dir models/q-grown-raster-axial-12-q254-frozen-20260824-v0
+```
+
+Every multi-CC witness becomes a chain of one-CC edges. Mandatory preprocessing
+and normalization run after each CC; the import manifest records the resulting
+source stopping key. `promote_dgkt_witness_identifications.py` then attaches the
+named knot as `attested` identity evidence, while the graph route itself remains
+fully replay-verified. `build_dgkt_witness_coverage_report.py` separates covered,
+mapped-but-too-long and unmapped claims for the next targeted search.
+
 ## Federated catalogue and CC adjacency
 
 `tools/build_federated_catalogue.py` imports a hash-pinned KnotInfo snapshot
@@ -199,11 +333,19 @@ actually connects a normalized stopping point.
 tools/unknotdb_cli.py knot-show 12n_570
 tools/unknotdb_cli.py resolve-identifier K12n570 --scheme spherogram
 tools/unknotdb_cli.py resolve-representation dt '[4, 6, 2]'
+tools/unknotdb_cli.py pd-for-graph HEX_OR_NODE_ID
+tools/unknotdb_cli.py graph-for-pd '[[1,5,2,4],[...]]'
 tools/unknotdb_cli.py find-knots-by-catalogue-property \
   --property unknotting_number=1
 tools/unknotdb_cli.py neighbors 9_19 --status replay_verified
 tools/unknotdb_cli.py catalogue-coverage
 ```
+
+`pd-for-graph` and `graph-for-pd` join the identification and federated
+catalogue sidecars through the stable knot ID. Their rows say
+`relation=same_knot_type` and `exact_conversion=false` unless a future replayed
+diagram-conversion relation supports the stronger claim; a knot-name mapping
+is never presented as a specific PD-to-braid isotopy certificate.
 
 Adjacency rows are explicitly `claimed`, `diagram_attested`, or
 `replay_verified`.  Only the last status is a named projection of an immutable
@@ -215,6 +357,28 @@ source braids are handled by `tools/backfill_jones_pd.py`: it checks the exact
 Spherogram source-braid identity, then evaluates the equivalent minimal
 11--13-crossing PD diagram by an exact Kauffman state sum. This avoids the
 Temperley--Lieb/Catalan blow-up caused by computing directly on a wide braid.
+
+## Full-representation embedding pilot
+
+The standalone embedding experiment exports replay-derived interval labels
+without changing the proof graph or a policy checkpoint. It learns separate
+global `z_knot`, `z_isotopy`, and `z_layout` vectors from the complete
+variable-size representation, using either a raster CNN or a strand graph.
+
+```bash
+runtime/target/release/unknotdb-runtime export-embedding-pairs \
+  proof.sqlite identification.sqlite embedding-pairs.sqlite
+
+python3 tools/train_global_knot_embeddings.py \
+  --sidecar embedding-pairs.sqlite --output-dir outputs/embedding-pilot \
+  --device auto
+```
+
+The trainer is device-agnostic (`cpu`, Apple `mps`, or NVIDIA `cuda`). Pair
+labels are intervals: a replayed path is only an upper bound unless the exporter
+also certifies the lower bound. Identity/orbit-disjoint split units prevent
+known equivalent representations from leaking between train and evaluation.
+See [`schema/embedding-pairs-v0.md`](schema/embedding-pairs-v0.md).
 
 ## Naming
 
