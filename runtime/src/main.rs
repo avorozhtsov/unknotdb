@@ -3018,7 +3018,7 @@ fn validate_published_snapshot(path: &Path) -> Result<()> {
 fn sha256_digest(bytes: &[u8]) -> Result<RepKey> {
     let encoded = unknotdb::util::sha256_hex(bytes);
     let mut digest = [0_u8; 32];
-    for (index, pair) in encoded.as_bytes().chunks_exact(2).enumerate() {
+    for (index, pair) in encoded.as_bytes().chunks(2).enumerate() {
         digest[index] = u8::from_str_radix(std::str::from_utf8(pair)?, 16)?;
     }
     Ok(digest)
@@ -3263,7 +3263,7 @@ fn parse_rep_key(value: &str) -> Result<RepKey> {
         return Err("representation key must contain 64 hex characters".into());
     }
     let mut key = [0_u8; 32];
-    for (index, pair) in value.as_bytes().chunks_exact(2).enumerate() {
+    for (index, pair) in value.as_bytes().chunks(2).enumerate() {
         let pair = std::str::from_utf8(pair)?;
         key[index] = u8::from_str_radix(pair, 16)
             .map_err(|_| "representation key contains non-hex characters")?;

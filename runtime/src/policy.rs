@@ -1245,7 +1245,7 @@ fn stop_reason_code(reason: PolicyStopReason) -> u8 {
 fn sha256_digest(bytes: &[u8]) -> Result<RepKey> {
     let encoded = unknotdb::util::sha256_hex(bytes);
     let mut digest = [0_u8; 32];
-    for (index, pair) in encoded.as_bytes().chunks_exact(2).enumerate() {
+    for (index, pair) in encoded.as_bytes().chunks(2).enumerate() {
         digest[index] = u8::from_str_radix(std::str::from_utf8(pair)?, 16)?;
     }
     Ok(digest)

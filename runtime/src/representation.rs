@@ -242,7 +242,7 @@ impl BraidRepresentation {
             .into());
         }
         let word = bytes[HEADER_LEN..]
-            .chunks_exact(2)
+            .chunks(2)
             .map(|pair| i16::from_le_bytes([pair[0], pair[1]]))
             .collect();
         let representation = Self {
@@ -328,7 +328,7 @@ impl BraidRepresentation {
                 .collect(),
             BYTE_WORD_FLAG => payload.iter().map(|byte| u16::from(*byte)).collect(),
             _ => payload
-                .chunks_exact(2)
+                .chunks(2)
                 .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
                 .collect(),
         };
@@ -1196,7 +1196,7 @@ impl ProofProgram {
             .into());
         }
         let actions = bytes[PROGRAM_HEADER_LEN..]
-            .chunks_exact(8)
+            .chunks(8)
             .map(|chunk| SemanticAction::decode_u63(u64::from_le_bytes(chunk.try_into().unwrap())))
             .collect::<Result<Vec<_>>>()?;
         Ok(Self { actions })
@@ -1361,7 +1361,7 @@ impl CheckpointedProofProgram {
             .into());
         }
         let instructions = bytes[PROGRAM_HEADER_LEN..]
-            .chunks_exact(8)
+            .chunks(8)
             .map(|chunk| {
                 let encoded = u64::from_le_bytes(chunk.try_into().unwrap());
                 if encoded & NORMALIZE_ORIGIN_TAG == 0 {
@@ -2323,7 +2323,7 @@ fn minimal_cyclic_rotation(word: &[i16]) -> usize {
 fn sha256_key(bytes: &[u8]) -> Result<RepKey> {
     let hex = unknotdb::util::sha256_hex(bytes);
     let mut key = [0_u8; 32];
-    for (index, pair) in hex.as_bytes().chunks_exact(2).enumerate() {
+    for (index, pair) in hex.as_bytes().chunks(2).enumerate() {
         let text = std::str::from_utf8(pair)?;
         key[index] = u8::from_str_radix(text, 16)?;
     }

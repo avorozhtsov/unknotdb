@@ -1101,7 +1101,7 @@ pub fn synthetic_key(id: u64) -> RepKey {
     let mut key = [0u8; 32];
     key[..8].copy_from_slice(&id.to_le_bytes());
     let mut state = id ^ 0x9e37_79b9_7f4a_7c15;
-    for chunk in key[8..].chunks_exact_mut(8) {
+    for chunk in key[8..].chunks_mut(8) {
         state = splitmix64(state);
         chunk.copy_from_slice(&state.to_le_bytes());
     }

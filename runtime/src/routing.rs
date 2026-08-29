@@ -610,7 +610,7 @@ pub fn show_routing(proof: &Path, sidecar: &Path, identifier: &str) -> Result<St
             return Err("routing identifier must be a node ID or 64-digit rep key".into());
         }
         let mut key = [0_u8; 32];
-        for (index, pair) in identifier.as_bytes().chunks_exact(2).enumerate() {
+        for (index, pair) in identifier.as_bytes().chunks(2).enumerate() {
             key[index] = u8::from_str_radix(std::str::from_utf8(pair)?, 16)?;
         }
         proof_connection.query_row(

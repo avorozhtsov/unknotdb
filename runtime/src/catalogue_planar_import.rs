@@ -427,7 +427,7 @@ fn parse_key(value: &str) -> Result<RepKey> {
         return Err("representation key is not 64 hexadecimal digits".into());
     }
     let mut key = [0_u8; 32];
-    for (index, pair) in value.as_bytes().chunks_exact(2).enumerate() {
+    for (index, pair) in value.as_bytes().chunks(2).enumerate() {
         key[index] = u8::from_str_radix(std::str::from_utf8(pair)?, 16)?;
     }
     Ok(key)
