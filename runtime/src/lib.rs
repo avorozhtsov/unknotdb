@@ -19,6 +19,7 @@ pub mod catalogue_braid_import;
 pub mod catalogue_planar_import;
 pub mod census;
 pub mod descending;
+pub mod embedding;
 pub mod expansion;
 pub mod frontier;
 pub mod high_u;
@@ -30,6 +31,9 @@ pub mod population;
 pub mod reducer;
 pub mod representation;
 pub mod rf_import;
+pub mod routing;
+pub mod supervision;
+pub mod target_campaign;
 pub mod targeted;
 pub mod wang_zhang_import;
 

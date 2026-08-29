@@ -9,6 +9,7 @@ use unknotdb_runtime::{
     catalogue_planar_import::import_catalogue_planar,
     census::{complete_natural_braids, enumerate_natural_braids, run_natural_braid_census},
     descending::{run_descending_backfill, DescendingBackfillLimits},
+    embedding::export_embedding_pairs,
     expansion::{
         acs10_comparison_report, improve_quality, measure_b5_cohort, reverse_expand,
         verify_key_superset, B4RegressionReport, QualityLimits, ReverseLimits,
@@ -34,7 +35,10 @@ use unknotdb_runtime::{
         PACKED_REPRESENTATION_CODEC, VALIDATOR_VERSION,
     },
     rf_import::{import_best_traces, import_descending_corpus, read_best_trace_tsv},
+    routing::{build_routing_sidecar, show_routing},
+    supervision::{export_cc_frontier_supervision, export_graph_supervision},
     synthetic_edges, synthetic_key, synthetic_nodes,
+    target_campaign::{read_targeted_braids_tsv, run_target_campaign, TargetCampaignLimits},
     targeted::{force_connected_insert, ConnectedInsertDisposition, ConnectedInsertLimits},
     wang_zhang_import::{import_wang_zhang_cube, import_wang_zhang_u1},
     write_snapshot_atomic, GraphSnapshot, HotRoute, PolicyStopAttestation, RepKey, Result,
@@ -102,10 +106,23 @@ usage:
       --manifest <manifest.tsv> [--cohort-size N] [frontier/policy bounds]
       --oracle <program> [oracle arguments...]
   unknotdb-runtime report-acs10 <snapshot.sqlite> --report <report.tsv>
+  unknotdb-runtime build-routing-sidecar <snapshot.sqlite> <routing.sqlite>
+  unknotdb-runtime show-routing <snapshot.sqlite> <routing.sqlite> <node-id-or-rep-key>
+  unknotdb-runtime export-graph-supervision <snapshot.sqlite> <routing.sqlite> <dataset.sqlite>
+  unknotdb-runtime export-cc-frontier-supervision <snapshot.sqlite> <routing.sqlite> <dataset.sqlite>
+  unknotdb-runtime export-embedding-pairs <snapshot.sqlite> <identification.sqlite> <dataset.sqlite>
   unknotdb-runtime connect-braid <input.sqlite> <output.sqlite> <strands> <word>
       --manifest <manifest.tsv> --source-id <id>
       [--simulations 250] [--search-states 250] [--track-depth 12]
+      [--max-result-u N]
+      [--macro-depth 1] [--macro-states 1]
       [--max-policy-plies 128] [--max-semantic-moves 32]
+      --oracle <program> [oracle arguments...]
+  unknotdb-runtime campaign-targeted-braids <input.sqlite> <output.sqlite>
+      --cohort <targets.tsv> --manifest <manifest.tsv>
+      [--per-item-simulations 1000] [--total-simulations 20000]
+      [--track-depth 2] [--max-policy-plies 128] [--max-semantic-moves 32]
+      [--macro-depth 1] [--macro-states 1]
       --oracle <program> [oracle arguments...]
   unknotdb-runtime optimize-braid-node <input.sqlite> <output.sqlite> <strands> <word>
       --manifest <manifest.tsv> [--profile graph-aware|breadth-first|short-witness]
@@ -938,6 +955,11 @@ fn run() -> Result<()> {
                 max_track_depth: flag_u64(command_args, "--track-depth", 12)?
                     .try_into()
                     .map_err(|_| "--track-depth must fit u16")?,
+                max_result_u: optional_flag_string(command_args, "--max-result-u")?
+                    .map(|value| value.parse())
+                    .transpose()?,
+                max_macro_semantic_depth: flag_u64(command_args, "--macro-depth", 1)?.try_into()?,
+                max_macro_states: flag_u64(command_args, "--macro-states", 1)?.try_into()?,
                 policy_limits: PolicyLimits {
                     max_policy_plies: flag_u64(command_args, "--max-policy-plies", 128)?
                         .try_into()
@@ -1002,6 +1024,81 @@ fn run() -> Result<()> {
                         manifest.display()
                     );
                 }
+            }
+        }
+        "campaign-targeted-braids" => {
+            let oracle_index = args
+                .iter()
+                .position(|arg| arg == "--oracle")
+                .ok_or("campaign-targeted-braids needs --oracle <program> [arguments...]")?;
+            let command_args = &args[..oracle_index];
+            let input = command_args
+                .get(1)
+                .map(PathBuf::from)
+                .ok_or("campaign-targeted-braids needs an input snapshot")?;
+            let output = command_args
+                .get(2)
+                .map(PathBuf::from)
+                .ok_or("campaign-targeted-braids needs an output snapshot")?;
+            let cohort_path = flag_path(command_args, "--cohort")?;
+            let manifest_path = flag_path(command_args, "--manifest")?;
+            ensure_new_outputs(&input, &[&output, &manifest_path])?;
+            let limits = TargetCampaignLimits {
+                per_item_simulations: flag_u64(command_args, "--per-item-simulations", 1000)?
+                    .try_into()?,
+                total_simulations: flag_u64(command_args, "--total-simulations", 20000)?
+                    .try_into()?,
+                max_track_depth: flag_u64(command_args, "--track-depth", 2)?.try_into()?,
+                max_macro_semantic_depth: flag_u64(command_args, "--macro-depth", 1)?.try_into()?,
+                max_macro_states: flag_u64(command_args, "--macro-states", 1)?.try_into()?,
+                policy_limits: PolicyLimits {
+                    max_policy_plies: flag_u64(command_args, "--max-policy-plies", 128)?
+                        .try_into()?,
+                    max_semantic_moves: flag_u64(command_args, "--max-semantic-moves", 32)?
+                        .try_into()?,
+                },
+            };
+            let oracle_program = args
+                .get(oracle_index + 1)
+                .ok_or("--oracle needs a program")?;
+            let oracle_args = &args[oracle_index + 2..];
+            let entries = read_targeted_braids_tsv(&cohort_path)?;
+            let cohort_id = unknotdb::util::sha256_hex(&std::fs::read(&cohort_path)?);
+            let snapshot_id = unknotdb::util::sha256_hex(&std::fs::read(&input)?);
+            let (mut population, parent_meta) = PopulationGraph::from_snapshot(&input)?;
+            let mut oracle = ExternalPolicyOracle::spawn(Path::new(oracle_program), oracle_args)?;
+            if parent_meta.policy_model_id.as_deref() != Some(oracle.model_id()) {
+                return Err("snapshot and target-campaign oracle model IDs differ".into());
+            }
+            let run = run_target_campaign(
+                &mut population,
+                &entries,
+                &mut oracle,
+                &snapshot_id,
+                &cohort_id,
+                limits,
+            )?;
+            write_text_atomic(&manifest_path, &run.manifest)?;
+            if run.improved_to_target > 0 {
+                let (nodes, edges) = population.into_snapshot_records()?;
+                let meta = SnapshotMeta::braid_mirror_orbit_v1(
+                    format!("target-campaign-v0-from-{}", parent_meta.source_generation),
+                    oracle.model_id(),
+                );
+                write_snapshot_atomic(&output, &meta, nodes, edges)?;
+                validate_published_snapshot(&output)?;
+                verify_key_superset(&input, &output)?;
+                println!(
+                    "target campaign published: {} attempted={} improved={} misses={} nodes+={} edges+={} simulations={}",
+                    output.display(), run.attempted, run.improved_to_target, run.misses,
+                    run.inserted_nodes, run.inserted_edges, run.simulations,
+                );
+            } else {
+                println!(
+                    "target campaign no-improvement: attempted={} satisfied={} misses={} simulations={} manifest={} (no snapshot published)",
+                    run.attempted, run.already_satisfied, run.misses, run.simulations,
+                    manifest_path.display(),
+                );
             }
         }
         "optimize-braid-node" => {
@@ -1865,10 +1962,11 @@ fn run() -> Result<()> {
             validate_published_snapshot(&output)?;
             verify_key_superset(&input, &output)?;
             println!(
-                "catalogue planar snapshot: {} corpus={} witnesses={} candidates={} improved={} already={} absent={} failed={} direct={} collateral={} nodes+={} edges+={} certificates+={}",
+                "catalogue planar snapshot: {} corpus={} witnesses={} candidates={} improved={} already={} absent={} newly_connected={} failed={} direct={} collateral={} nodes+={} edges+={} certificates+={}",
                 output.display(), run.corpus_entries, run.witness_entries,
                 run.strict_candidates, run.improved, run.already_sufficient,
-                run.absent_sources, run.failed, run.direct_improvements,
+                run.absent_sources, run.newly_connected_sources, run.failed,
+                run.direct_improvements,
                 run.collateral_improvements, run.inserted_nodes, run.inserted_edges,
                 run.inserted_certificates,
             );
@@ -2031,6 +2129,141 @@ fn run() -> Result<()> {
             println!(
                 "published Action-Choice Score 10 report: {}",
                 report.display()
+            );
+        }
+        "build-routing-sidecar" => {
+            let proof = args
+                .get(1)
+                .map(PathBuf::from)
+                .ok_or("build-routing-sidecar needs a proof snapshot")?;
+            let output = args
+                .get(2)
+                .map(PathBuf::from)
+                .ok_or("build-routing-sidecar needs an output sidecar")?;
+            let report = build_routing_sidecar(&proof, &output)?;
+            println!(
+                "published routing sidecar: {} nodes={} edges={} terminals={} frontier_rows={} shortest_next_diff={} shortest_improved={} semantic_saving={} max_semantic_saving={} l1000_next_diff={} l1000_more_cc={} bytes={} proof_sha256={}",
+                output.display(),
+                report.nodes,
+                report.edges,
+                report.terminals,
+                report.frontier_rows,
+                report.shortest_next_differs_from_active,
+                report.shortest_improves_active,
+                report.aggregate_semantic_saving,
+                report.maximum_semantic_saving,
+                report.l1000_next_differs_from_shortest,
+                report.l1000_uses_more_cc,
+                report.bytes,
+                report.proof_sha256,
+            );
+        }
+        "show-routing" => {
+            let proof = args
+                .get(1)
+                .map(PathBuf::from)
+                .ok_or("show-routing needs a proof snapshot")?;
+            let sidecar = args
+                .get(2)
+                .map(PathBuf::from)
+                .ok_or("show-routing needs a routing sidecar")?;
+            let identifier = args
+                .get(3)
+                .ok_or("show-routing needs a node ID or representation key")?;
+            print!("{}", show_routing(&proof, &sidecar, identifier)?);
+        }
+        "export-graph-supervision" => {
+            let proof = args
+                .get(1)
+                .map(PathBuf::from)
+                .ok_or("export-graph-supervision needs a proof snapshot")?;
+            let routing = args
+                .get(2)
+                .map(PathBuf::from)
+                .ok_or("export-graph-supervision needs a routing sidecar")?;
+            let output = args
+                .get(3)
+                .map(PathBuf::from)
+                .ok_or("export-graph-supervision needs an output dataset")?;
+            if args.len() != 4 {
+                return Err("export-graph-supervision takes exactly three paths".into());
+            }
+            let report = export_graph_supervision(&proof, &routing, &output)?;
+            println!(
+                "published graph supervision: {} selected_edges={} replayed_edges={} planar_excluded={} theorem_actions_excluded={} preprocessor_labels={} cc_labels={} occurrences={} conflicts={} split={}/{}/{} bytes={} proof_sha256={} routing_sha256={}",
+                output.display(),
+                report.selected_edges,
+                report.replayed_edges,
+                report.excluded_planar_edges,
+                report.excluded_theorem_actions,
+                report.preprocessor_labels,
+                report.cc_labels,
+                report.occurrences,
+                report.conflicting_states,
+                report.train_labels,
+                report.validation_labels,
+                report.test_labels,
+                report.bytes,
+                report.proof_sha256,
+                report.routing_sha256,
+            );
+        }
+        "export-cc-frontier-supervision" => {
+            let proof = args
+                .get(1)
+                .map(PathBuf::from)
+                .ok_or("export-cc-frontier-supervision needs a proof snapshot")?;
+            let routing = args
+                .get(2)
+                .map(PathBuf::from)
+                .ok_or("export-cc-frontier-supervision needs a routing sidecar")?;
+            let output = args
+                .get(3)
+                .map(PathBuf::from)
+                .ok_or("export-cc-frontier-supervision needs an output dataset")?;
+            if args.len() != 4 {
+                return Err("export-cc-frontier-supervision takes exactly three paths".into());
+            }
+            let report = export_cc_frontier_supervision(&proof, &routing, &output)?;
+            println!(
+                "published CC frontier supervision: {} candidate_edges={} replayed_edges={} states={} options={} accepted={} compared={} multi_accepted_states={} bytes={} proof_sha256={} routing_sha256={}",
+                output.display(),
+                report.candidate_edges,
+                report.replayed_edges,
+                report.states,
+                report.options,
+                report.accepted_options,
+                report.compared_options,
+                report.multi_accepted_states,
+                report.bytes,
+                report.proof_sha256,
+                report.routing_sha256,
+            );
+        }
+        "export-embedding-pairs" => {
+            let proof = args
+                .get(1)
+                .map(PathBuf::from)
+                .ok_or("export-embedding-pairs needs a proof snapshot")?;
+            let identification = args
+                .get(2)
+                .map(PathBuf::from)
+                .ok_or("export-embedding-pairs needs an identification sidecar")?;
+            let output = args
+                .get(3)
+                .map(PathBuf::from)
+                .ok_or("export-embedding-pairs needs an output dataset")?;
+            if args.len() != 4 {
+                return Err("export-embedding-pairs takes exactly three paths".into());
+            }
+            let report = export_embedding_pairs(&proof, &identification, &output)?;
+            println!(
+                "published embedding pairs: {} replayed_edges={} representations={} pairs={} cc=0:{}/1:{}/upper1:{} rm=0:{}/1:{}/2:{} split={}/{}/{} bytes={} proof_sha256={} identification_sha256={}",
+                output.display(), report.replayed_edges, report.representations, report.pairs,
+                report.exact_cc0, report.exact_cc1, report.upper_cc1, report.exact_rm0,
+                report.exact_rm1, report.exact_rm2, report.split_train,
+                report.split_validation, report.split_test, report.bytes,
+                report.proof_sha256, report.identification_sha256,
             );
         }
         "compact-snapshot" => {

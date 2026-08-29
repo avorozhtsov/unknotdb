@@ -48,6 +48,8 @@ struct CatalogueWitness {
 
 #[derive(Clone)]
 struct CompiledWitness {
+    source_key: RepKey,
+    source_was_absent: bool,
     edges: Vec<ChainEdge>,
     terminal_source: crate::representation::NormalizedRepresentation,
     terminal_stop: PolicyStopAttestation,
@@ -63,6 +65,7 @@ pub struct CataloguePlanarImportRun {
     pub improved: usize,
     pub already_sufficient: usize,
     pub absent_sources: usize,
+    pub newly_connected_sources: usize,
     pub failed: usize,
     pub direct_improvements: usize,
     pub collateral_improvements: usize,
@@ -89,7 +92,7 @@ pub fn import_catalogue_planar<O: PolicyOracle>(
          policy_model_id\t{}\n\
          max_policy_plies\t{}\n\
          max_semantic_moves\t{}\n\
-         row\tknot_id\tstatus\told_u\tnew_u\tcc_count\tcertificate_id\tdetail\n",
+         row\tknot_id\tstatus\tsource_key\told_u\tnew_u\tcc_count\tcertificate_id\tdetail\n",
         oracle.model_id(),
         policy_limits.max_policy_plies,
         policy_limits.max_semantic_moves,
@@ -100,6 +103,7 @@ pub fn import_catalogue_planar<O: PolicyOracle>(
     let mut improved = 0_usize;
     let mut already_sufficient = 0_usize;
     let mut absent_sources = 0_usize;
+    let mut newly_connected_sources = 0_usize;
     let mut failed = 0_usize;
 
     for (source_name, bytes) in corpus_bytes {
@@ -128,44 +132,51 @@ pub fn import_catalogue_planar<O: PolicyOracle>(
                         None,
                         0,
                         None,
+                        None,
                         &error.to_string(),
                     );
                     continue;
                 }
             };
-            let Some(seed) = graph.expansion_seed(&source_key)? else {
+            let raw_old_u = graph.u_upper_bound(&source_key);
+            if raw_old_u.is_none() {
                 absent_sources += 1;
-                push_row(
-                    &mut manifest,
-                    &entry.knot_id,
-                    "absent-source",
-                    None,
-                    None,
-                    0,
-                    None,
-                    "standard normalized key is not in graph",
-                );
-                continue;
-            };
-            let old_u = seed.u_upper_bound;
-            if old_u <= entry.catalogue_exact_u {
+            }
+            if raw_old_u.is_some_and(|old_u| old_u <= entry.catalogue_exact_u) {
                 already_sufficient += 1;
                 push_row(
                     &mut manifest,
                     &entry.knot_id,
                     "already-sufficient",
-                    Some(old_u),
-                    Some(old_u),
+                    raw_old_u,
+                    raw_old_u,
                     entry.catalogue_exact_u,
                     None,
+                    Some(source_key),
                     "graph bound is already no larger than witness cost",
                 );
                 continue;
             }
-            strict_candidates += 1;
             let witness = entry.witness.as_ref().unwrap();
             match compile_witness(graph, &entry, witness, oracle, policy_limits) {
                 Ok(compiled) => {
+                    let old_u = graph.u_upper_bound(&compiled.source_key);
+                    if old_u.is_some_and(|bound| bound <= entry.catalogue_exact_u) {
+                        already_sufficient += 1;
+                        push_row(
+                            &mut manifest,
+                            &entry.knot_id,
+                            "already-sufficient-after-preprocessing",
+                            old_u,
+                            old_u,
+                            entry.catalogue_exact_u,
+                            None,
+                            Some(compiled.source_key),
+                            "preprocessed stopping point already has a sufficient route",
+                        );
+                        continue;
+                    }
+                    strict_candidates += 1;
                     let certificate_id = unknotdb::util::sha256(&compiled.certificate);
                     let unknot_key = graph.unknot_key()?;
                     graph.relax_unknot_edge_with_planar_certificate(
@@ -186,24 +197,29 @@ pub fn import_catalogue_planar<O: PolicyOracle>(
                         )?;
                     }
                     let new_u = graph
-                        .u_upper_bound(&source_key)
+                        .u_upper_bound(&compiled.source_key)
                         .ok_or("catalogue source disappeared after relaxation")?;
-                    if new_u >= old_u || new_u > entry.catalogue_exact_u {
+                    if old_u.is_some_and(|bound| new_u >= bound) || new_u > entry.catalogue_exact_u
+                    {
                         return Err(format!(
-                            "{} accepted chain did not produce its strict bound: {old_u} -> {new_u}",
-                            entry.knot_id
+                            "{} accepted chain did not produce its strict bound: {:?} -> {new_u}",
+                            entry.knot_id, old_u,
                         )
                         .into());
+                    }
+                    if compiled.source_was_absent {
+                        newly_connected_sources += 1;
                     }
                     improved += 1;
                     push_row(
                         &mut manifest,
                         &entry.knot_id,
                         "improved",
-                        Some(old_u),
+                        old_u,
                         Some(new_u),
                         witness.crossing_change_positions.len() as u32,
                         Some(certificate_id),
+                        Some(compiled.source_key),
                         "verified chain",
                     );
                 }
@@ -213,10 +229,11 @@ pub fn import_catalogue_planar<O: PolicyOracle>(
                         &mut manifest,
                         &entry.knot_id,
                         "failed",
-                        Some(old_u),
-                        Some(old_u),
+                        raw_old_u,
+                        raw_old_u,
                         witness.crossing_change_positions.len() as u32,
                         None,
+                        Some(source_key),
                         &error.to_string(),
                     );
                 }
@@ -241,6 +258,7 @@ pub fn import_catalogue_planar<O: PolicyOracle>(
          summary\timproved\t{improved}\n\
          summary\talready_sufficient\t{already_sufficient}\n\
          summary\tabsent_sources\t{absent_sources}\n\
+         summary\tnewly_connected_sources\t{newly_connected_sources}\n\
          summary\tfailed\t{failed}\n\
          summary\tcollateral_improvements\t{collateral_improvements}\n\
          summary\tinserted_nodes\t{inserted_nodes}\n\
@@ -254,6 +272,7 @@ pub fn import_catalogue_planar<O: PolicyOracle>(
         improved,
         already_sufficient,
         absent_sources,
+        newly_connected_sources,
         failed,
         direct_improvements: improved,
         collateral_improvements,
@@ -275,18 +294,40 @@ fn compile_witness<O: PolicyOracle>(
         return Err("witness CC count differs from catalogue cost".into());
     }
     let source_key = parse_key(&entry.standard_braid.rep_key)?;
-    let seed = graph
-        .expansion_seed(&source_key)?
-        .ok_or("catalogue source is absent")?;
-    if seed.representation.representation.strands != entry.standard_braid.strands
-        || seed.representation.representation.word != entry.standard_braid.normalized_word
-    {
+    let raw_source = BraidRepresentation {
+        strands: entry.standard_braid.strands,
+        cyclic_band_generators: false,
+        word: entry.standard_braid.normalized_word.clone(),
+    };
+    let normalized_source = raw_source.normalize()?;
+    if normalized_source.key != source_key || normalized_source.representation != raw_source {
         return Err("catalogue standard braid does not match graph source encoding".into());
     }
-    let mut raw = seed.representation.representation.clone();
-    let mut current = seed.representation;
-    let mut current_stop = seed.policy_stop;
-    let mut previous_preprocessing: Option<(BraidRepresentation, CheckpointedProofProgram)> = None;
+    let (mut current, mut current_stop, mut previous_preprocessing, source_was_absent) =
+        if let Some(seed) = graph.expansion_seed(&source_key)? {
+            (seed.representation, seed.policy_stop, None, false)
+        } else {
+            let report = preprocess_to_stopping_point(&raw_source, oracle, policy_limits)?;
+            if !report.is_graph_stopping_point() {
+                return Err(format!(
+                    "catalogue source preprocessing stopped at {:?}",
+                    report.stop_reason
+                )
+                .into());
+            }
+            let preprocessing = CheckpointedProofProgram {
+                instructions: compile_preprocessing_instructions(&report)?,
+            };
+            let source_was_absent = graph.u_upper_bound(&report.output.key).is_none();
+            (
+                report.output.clone(),
+                attestation(&report)?,
+                Some((raw_source.clone(), preprocessing)),
+                source_was_absent,
+            )
+        };
+    let effective_source_key = current.key;
+    let mut raw = raw_source;
     let mut edges = Vec::new();
     for &position in &witness.crossing_change_positions {
         let mut instructions = inverse_preprocessing(&previous_preprocessing)?;
@@ -358,6 +399,8 @@ fn compile_witness<O: PolicyOracle>(
         Some(&certificate),
     )?;
     Ok(CompiledWitness {
+        source_key: effective_source_key,
+        source_was_absent,
         edges,
         terminal_source: current,
         terminal_stop: current_stop,
@@ -399,11 +442,13 @@ fn push_row(
     new_u: Option<u32>,
     cc_count: u32,
     certificate_id: Option<RepKey>,
+    source_key: Option<RepKey>,
     detail: &str,
 ) {
     let clean = detail.replace(['\t', '\n', '\r'], " ");
     manifest.push_str(&format!(
-        "result\t{knot}\t{status}\t{}\t{}\t{cc_count}\t{}\t{clean}\n",
+        "result\t{knot}\t{status}\t{}\t{}\t{}\t{cc_count}\t{}\t{clean}\n",
+        source_key.map_or_else(|| "-".to_owned(), |value| hex(&value)),
         old_u.map_or_else(|| "-".to_owned(), |value| value.to_string()),
         new_u.map_or_else(|| "-".to_owned(), |value| value.to_string()),
         certificate_id.map_or_else(|| "-".to_owned(), |value| hex(&value)),

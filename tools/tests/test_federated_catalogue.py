@@ -52,6 +52,55 @@ class FederatedCatalogueTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "unknown"):
             cli.resolve_knot(self.db, "9_99", None)
 
+    def test_pd_graph_join_is_bidirectional_and_conservative(self) -> None:
+        pd = "[[1,4,2,3]]"
+        digest = catalogue.text_sha256("pd", pd)
+        self.db.execute(
+            "INSERT INTO representations VALUES (?,?,?,?,?,?,?,?)",
+            (1, 1, "pd", pd, digest, "fixture", "row:1", 0),
+        )
+        identifications = sqlite3.connect(":memory:")
+        identifications.executescript(
+            """
+            CREATE TABLE graph_vertices(
+                rep_key BLOB PRIMARY KEY,node_id INTEGER,encoding BLOB,
+                u_upper INTEGER,cc0_component_key BLOB);
+            CREATE TABLE graph_vertex_knot_map(
+                rep_key BLOB PRIMARY KEY,knot_id TEXT,mirror_bit INTEGER,
+                evidence_class TEXT,mapping_status TEXT,evidence_id BLOB);
+            CREATE TABLE knot_representation_postings(
+                knot_id TEXT,representation_namespace TEXT,
+                representation_ref TEXT,rep_key BLOB,graph_node_id INTEGER,
+                mirror_bit INTEGER,evidence_class TEXT,mapping_status TEXT);
+            """
+        )
+        key = bytes.fromhex("12" * 32)
+        identifications.execute(
+            "INSERT INTO graph_vertices VALUES (?,?,?,?,?)",
+            (key, 7, b"braid", 1, key),
+        )
+        identifications.execute(
+            "INSERT INTO graph_vertex_knot_map VALUES (?,?,?,?,?,?)",
+            (key, "knot:3_1", 0, "verified", "fixture", b"evidence"),
+        )
+        identifications.execute(
+            "INSERT INTO knot_representation_postings VALUES (?,?,?,?,?,?,?,?)",
+            ("knot:3_1", "graph", key.hex(), key, 7, 0, "verified", "fixture"),
+        )
+
+        forward = cli.pd_rows_for_graph(
+            identifications, self.db, key.hex(), limit=10
+        )
+        reverse = cli.graph_rows_for_pd(
+            identifications, self.db, "[ [1, 4, 2, 3] ]", None, limit=10
+        )
+        self.assertEqual(forward[0]["pd"], pd)
+        self.assertEqual(reverse[0]["graph_node_id"], 7)
+        self.assertEqual(forward[0]["relation"], "same_knot_type")
+        self.assertFalse(forward[0]["exact_conversion"])
+        self.assertFalse(reverse[0]["exact_conversion"])
+        identifications.close()
+
     def test_diagram_attested_adjacency_import(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "adjacency.tsv"

@@ -55,7 +55,29 @@ submissions are pull requests, and CI is the referee.
 
 ## Quickstart
 
-No dependencies; a Rust toolchain is all you need.
+The current public-facing artifact is the coherent `v0.10.1` pre-release
+bundle. It contains 101,213 graph vertices and 154,828 immutable proof edges;
+full release validation replayed every edge. Download and verify the bundle as
+described under [Coherent graph release bundle](#coherent-graph-release-bundle),
+then try four representative queries:
+
+```bash
+tools/unknotdb_cli.py knot-show 9_19
+tools/unknotdb_cli.py invariants-for-knot 3_1
+tools/unknotdb_cli.py find-knots-by-invariant --invariant determinant=3
+tools/unknotdb_cli.py neighbors 9_19 --status replay_verified
+```
+
+The Rust runtime validates and queries the immutable proof graph:
+
+```bash
+cargo build --release --manifest-path runtime/Cargo.toml
+runtime/target/release/unknotdb-runtime validate release-v0.10.1/proof.sqlite
+runtime/target/release/unknotdb-runtime lookup-braid \
+  release-v0.10.1/proof.sqlite 2 1,1,1
+```
+
+The smaller certificate verifier remains available independently:
 
 ```bash
 cargo build --release --manifest-path verifier/Cargo.toml
@@ -72,7 +94,7 @@ find certs -name '*.cert' -print0 | xargs -0 "$UNKNOTDB" verify
     --date 2026-08-15
 ```
 
-`unknotdb help` lists the rest. To submit, see
+`unknotdb help` lists the certificate commands. To submit, see
 [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
 ## What is certified
@@ -103,36 +125,44 @@ point of the project.
 
 ## Layout
 
-```
-schema/     certificate + claim format, conventions        (normative)
-verifier/   the Rust verifier crate; binary `unknotdb`
-runtime/    generated SQLite snapshots + in-memory hot lookup
-certs/      the corpus, one file per claim
-tools/      Python: ingest, generators, site build
-docs/       design notes
-site/       generated; disposable
-```
+| Path | Contents |
+|---|---|
+| `schema/` | Normative representation, certificate, graph, sidecar, and supervision contracts |
+| `verifier/` | Small independent planar-certificate verifier |
+| `runtime/` | Rust proof graph, replay, lookup, routing, import, and supervision export |
+| `certs/` | Human-reviewable certificate corpus |
+| `tools/` | Catalogue import, witness campaigns, sidecar builders, and user CLI |
+| `docs/` | Architecture, conventions, runtime design, and roadmap |
+| `outputs/`, `release-v*/` | Generated local artifacts; intentionally not committed |
 
 The repo is the source of truth. The API and website are built from it and can be
 deleted and regenerated at any time.
 
 ## Status
 
-Early. Alphabets `R` (R1±, R2±, R3) and `X` (plus crossing changes) are
-complete. Markov and band moves are specified but not implemented, and are
-rejected rather than trusted. See [`docs/roadmap.md`](docs/roadmap.md).
+UnknotDB is a substantial pre-release on the path to public v1, not yet a claim
+of complete knot-table coverage. The core graph, compact program dictionary,
+independent replay, 0-1 shortest-route recomputation, atomic snapshot
+publication, invariant/identity/provenance sidecars, catalogue federation, and
+graph-derived supervision exports are implemented. See
+[`docs/graph-runtime-v0.md`](docs/graph-runtime-v0.md) and
+[`docs/roadmap.md`](docs/roadmap.md).
 
-The standalone graph runtime is now prototyped separately from the verifier; see
-[`docs/graph-runtime-v0.md`](docs/graph-runtime-v0.md). Its benchmark generator
-uses synthetic, explicitly non-proof edges. Preprocessing uses an existing,
+The small planar verifier and the graph runtime have deliberately separate move
+alphabets. Unsupported certificate primitives fail closed; a catalogue claim or
+neural proposal never becomes a graph edge merely because an external tool
+accepted it.
+
+Preprocessing uses an existing,
 inference-only Q254 checkpoint for `q-grown-raster-axial-12`; this project did
 not train a network. The checkpoint SHA-256 is part of every production snapshot
 contract, and all vertices must be reattested before a new model generation is
 published. Production keys are mirror orbits: a chiral knot and its mirror share
 one value node, while a replayable mirror bit transports the stored action route
-back to the submitted chirality. The first real snapshot is populated from the
-unknot by a checked scramble and monotone Bellman relaxation; synthetic data is
-still used only for scale benchmarks.
+back to the submitted chirality. The graph was initially populated from the
+unknot by checked scrambles and has since been expanded with independently
+replayed braid and planar witnesses. Synthetic data remains limited to
+explicitly labelled scale benchmarks.
 SQLite schema v1 stores each distinct proof program and its binary SHA-256 once;
 edges contain only a compact program ID, and the validator version is
 snapshot-wide metadata. Schema v2 splits the key lookup from dense hot nodes and
@@ -358,27 +388,23 @@ Spherogram source-braid identity, then evaluates the equivalent minimal
 11--13-crossing PD diagram by an exact Kauffman state sum. This avoids the
 Temperley--Lieb/Catalan blow-up caused by computing directly on a wide braid.
 
-## Full-representation embedding pilot
+## Embedding supervision export
 
-The standalone embedding experiment exports replay-derived interval labels
-without changing the proof graph or a policy checkpoint. It learns separate
-global `z_knot`, `z_isotopy`, and `z_layout` vectors from the complete
-variable-size representation, using either a raster CNN or a strand graph.
+Unknot DB exports replay-derived interval labels without changing the proof
+graph or a policy checkpoint. It owns the evidence: representations, distances,
+witness lengths, split units, provenance, and schema versions. Neural models,
+losses, data loaders, training loops, checkpoints, and evaluation live in the
+sibling [RF Knots](https://github.com/avorozhtsov/rf-knots) project.
 
 ```bash
 runtime/target/release/unknotdb-runtime export-embedding-pairs \
   proof.sqlite identification.sqlite embedding-pairs.sqlite
-
-python3 tools/train_global_knot_embeddings.py \
-  --sidecar embedding-pairs.sqlite --output-dir outputs/embedding-pilot \
-  --device auto
 ```
 
-The trainer is device-agnostic (`cpu`, Apple `mps`, or NVIDIA `cuda`). Pair
-labels are intervals: a replayed path is only an upper bound unless the exporter
-also certifies the lower bound. Identity/orbit-disjoint split units prevent
-known equivalent representations from leaking between train and evaluation.
-See [`schema/embedding-pairs-v0.md`](schema/embedding-pairs-v0.md).
+Pair labels are intervals: a replayed path is only an upper bound unless the
+exporter also certifies the lower bound. Identity/orbit-disjoint split units
+prevent known equivalent representations from leaking between train and
+evaluation. See [`schema/embedding-pairs-v0.md`](schema/embedding-pairs-v0.md).
 
 ## Naming
 

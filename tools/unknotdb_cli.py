@@ -47,6 +47,170 @@ def word(text: str) -> tuple[int, ...]:
     return result
 
 
+def canonical_pd_text(text: str) -> str:
+    """Canonicalize the catalogue JSON-array spelling of a PD diagram."""
+    try:
+        value = json.loads(text)
+    except json.JSONDecodeError as error:
+        raise ValueError("PD must be a JSON array of four-integer crossings") from error
+    if not isinstance(value, list) or any(
+        not isinstance(crossing, list)
+        or len(crossing) != 4
+        or any(
+            not isinstance(label, int) or isinstance(label, bool) for label in crossing
+        )
+        for crossing in value
+    ):
+        raise ValueError("PD must be a JSON array of four-integer crossings")
+    return json.dumps(value, separators=(",", ":"))
+
+
+def representation_digest(encoding: str, representation: str) -> bytes:
+    return hashlib.sha256(
+        encoding.encode() + b"\0" + representation.encode() + b"\0"
+    ).digest()
+
+
+def pd_rows_for_graph(
+    identifications: sqlite3.Connection,
+    federation: sqlite3.Connection,
+    key_or_node: str,
+    limit: int,
+) -> list[dict[str, Any]]:
+    if key_or_node.isdigit() and len(key_or_node) != 64:
+        predicate = "v.node_id=?"
+        parameter: Any = int(key_or_node)
+    else:
+        if len(key_or_node) != 64:
+            raise ValueError("graph key must be 64 hexadecimal characters")
+        try:
+            parameter = bytes.fromhex(key_or_node)
+        except ValueError as error:
+            raise ValueError("graph key is not hexadecimal") from error
+        predicate = "v.rep_key=?"
+    mappings = list(
+        identifications.execute(
+            f"""
+            SELECT lower(hex(v.rep_key)),v.node_id,m.knot_id,m.mirror_bit,
+                   m.evidence_class,m.mapping_status
+            FROM graph_vertices v JOIN graph_vertex_knot_map m USING(rep_key)
+            WHERE {predicate}
+            """,
+            (parameter,),
+        )
+    )
+    rows: list[dict[str, Any]] = []
+    for rep_key, node_id, knot_id, mirror_bit, evidence_class, status in mappings:
+        canonical_id = str(knot_id).removeprefix("knot:")
+        for pd, digest, source_id, source_pointer in federation.execute(
+            """
+            SELECT r.representation_text,lower(hex(r.representation_sha256)),
+                   r.source_id,r.source_pointer
+            FROM representations r JOIN knots k USING(knot_pk)
+            WHERE k.canonical_id=? AND r.encoding='pd'
+            ORDER BY r.preferred_rank,r.representation_pk LIMIT ?
+            """,
+            (canonical_id, limit - len(rows)),
+        ):
+            rows.append(
+                {
+                    "relation": "same_knot_type",
+                    "exact_conversion": False,
+                    "graph_node_id": node_id,
+                    "rep_key": rep_key,
+                    "knot_id": knot_id,
+                    "mirror_bit": mirror_bit,
+                    "graph_evidence_class": evidence_class,
+                    "graph_mapping_status": status,
+                    "pd": pd,
+                    "pd_sha256": digest,
+                    "pd_source": source_id,
+                    "pd_source_pointer": source_pointer,
+                }
+            )
+            if len(rows) == limit:
+                return rows
+    return rows
+
+
+def graph_rows_for_pd(
+    identifications: sqlite3.Connection,
+    federation: sqlite3.Connection,
+    representation: str | None,
+    digest_hex: str | None,
+    limit: int,
+) -> list[dict[str, Any]]:
+    if bool(representation) == bool(digest_hex):
+        raise ValueError("provide exactly one PD text or --sha256")
+    pd = canonical_pd_text(representation) if representation is not None else None
+    try:
+        digest = (
+            bytes.fromhex(digest_hex)
+            if digest_hex is not None
+            else representation_digest("pd", pd or "")
+        )
+    except ValueError as error:
+        raise ValueError("PD SHA-256 is not hexadecimal") from error
+    if len(digest) != 32:
+        raise ValueError("PD SHA-256 must contain 64 hexadecimal characters")
+    catalogue_rows = list(
+        federation.execute(
+            """
+            SELECT k.canonical_id,r.representation_text,
+                   lower(hex(r.representation_sha256)),r.source_id,r.source_pointer
+            FROM representations r JOIN knots k USING(knot_pk)
+            WHERE r.encoding='pd' AND r.representation_sha256=?
+            ORDER BY k.canonical_id
+            """,
+            (digest,),
+        )
+    )
+    rows: list[dict[str, Any]] = []
+    for (
+        canonical_id,
+        stored_pd,
+        stored_digest,
+        source_id,
+        source_pointer,
+    ) in catalogue_rows:
+        knot_id = canonical_knot_id(canonical_id)
+        for (
+            rep_key,
+            node_id,
+            mirror_bit,
+            evidence_class,
+            status,
+        ) in identifications.execute(
+            """
+            SELECT lower(hex(rep_key)),graph_node_id,mirror_bit,
+                   evidence_class,mapping_status
+            FROM knot_representation_postings
+            WHERE knot_id=? AND representation_namespace='graph'
+            ORDER BY graph_node_id,rep_key LIMIT ?
+            """,
+            (knot_id, limit - len(rows)),
+        ):
+            rows.append(
+                {
+                    "relation": "same_knot_type",
+                    "exact_conversion": False,
+                    "knot_id": knot_id,
+                    "pd": stored_pd,
+                    "pd_sha256": stored_digest,
+                    "pd_source": source_id,
+                    "pd_source_pointer": source_pointer,
+                    "graph_node_id": node_id,
+                    "rep_key": rep_key,
+                    "mirror_bit": mirror_bit,
+                    "graph_evidence_class": evidence_class,
+                    "graph_mapping_status": status,
+                }
+            )
+            if len(rows) == limit:
+                return rows
+    return rows
+
+
 def connection(path: Path) -> sqlite3.Connection:
     result = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
     schema = result.execute("SELECT value FROM meta WHERE key='schema'").fetchone()
@@ -86,6 +250,14 @@ def federation_connection(path: Path) -> sqlite3.Connection:
     schema = result.execute("SELECT value FROM meta WHERE key='schema'").fetchone()
     if schema != ("unknotdb-federated-catalogue-v1",):
         raise ValueError("unsupported federated catalogue schema")
+    return result
+
+
+def lower_bound_connection(path: Path) -> sqlite3.Connection:
+    result = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    schema = result.execute("SELECT value FROM meta WHERE key='schema'").fetchone()
+    if schema != ("unknotdb-lower-bound-sidecar-v0",):
+        raise ValueError("unsupported lower-bound sidecar schema")
     return result
 
 
@@ -299,6 +471,11 @@ def main() -> None:
         type=Path,
         default=Path("release-v0.10.1/federation.sqlite"),
     )
+    parser.add_argument(
+        "--lower-bounds",
+        type=Path,
+        default=Path("outputs/unknotdb-dgkt-lower-bounds-v0.sqlite"),
+    )
     parser.add_argument("--json", action="store_true")
     commands = parser.add_subparsers(dest="command", required=True)
 
@@ -358,6 +535,15 @@ def main() -> None:
     identify_graph = commands.add_parser("identification-for-graph")
     identify_graph.add_argument("key_or_node")
 
+    pd_for_graph = commands.add_parser("pd-for-graph")
+    pd_for_graph.add_argument("key_or_node")
+    pd_for_graph.add_argument("--limit", type=int, default=100)
+
+    graph_for_pd = commands.add_parser("graph-for-pd")
+    graph_for_pd.add_argument("pd", nargs="?")
+    graph_for_pd.add_argument("--sha256")
+    graph_for_pd.add_argument("--limit", type=int, default=100)
+
     postings = commands.add_parser("representations-for-knot")
     postings.add_argument("name", help="for example 3_1 or knot:3_1")
     postings.add_argument(
@@ -415,6 +601,17 @@ def main() -> None:
     find_catalogue = commands.add_parser("find-knots-by-catalogue-property")
     find_catalogue.add_argument("--property", type=constraint, required=True)
     find_catalogue.add_argument("--limit", type=int, default=100)
+
+    lower_for_knot = commands.add_parser("lower-bound-for-knot")
+    lower_for_knot.add_argument("name", help="for example 11n3 or knot:11n_3")
+
+    find_lower = commands.add_parser("find-knots-by-lower-bound")
+    find_lower.add_argument("--min", type=int, default=0)
+    find_lower.add_argument("--exact-only", action="store_true")
+    find_lower.add_argument("--method")
+    find_lower.add_argument("--limit", type=int, default=100)
+
+    commands.add_parser("lower-bound-sources")
 
     args = parser.parse_args()
     if hasattr(args, "limit") and args.limit <= 0:
@@ -493,6 +690,102 @@ def main() -> None:
         return
 
     if args.command in {
+        "lower-bound-for-knot",
+        "find-knots-by-lower-bound",
+        "lower-bound-sources",
+    }:
+        lower_bounds = lower_bound_connection(args.lower_bounds)
+        if args.command == "lower-bound-for-knot":
+            knot_id = canonical_knot_id(args.name)
+            rows = [
+                {
+                    "knot_id": knot,
+                    "u_lower": lower,
+                    "retained_upper": upper,
+                    "exact": bool(exact),
+                    "trust_status": trust,
+                    "method": method,
+                    "source": source,
+                    "source_pointer": pointer,
+                    "repository_url": repository,
+                    "source_commit": commit,
+                    "work_title": work,
+                    "certificate_pointer": f"{artifact}:{line}",
+                    "certificate_status": certificate_status,
+                }
+                for knot, lower, upper, exact, trust, method, source, pointer, repository, commit, work, artifact, line, certificate_status in lower_bounds.execute(
+                    """
+                    SELECT c.knot_id,c.u_lower,c.retained_upper,c.interval_exact,
+                           c.trust_status,m.display_name,c.source_id,c.source_pointer,
+                           s.repository_url,s.source_commit,s.work_title,
+                           e.artifact_path,e.csv_line,e.verification_status
+                    FROM lower_bound_claims c JOIN sources s USING(source_id)
+                    JOIN claim_evidence e USING(claim_id)
+                    JOIN methods m USING(method_id)
+                    WHERE c.knot_id=?
+                    ORDER BY m.method_id,e.artifact_path,e.csv_line
+                    """,
+                    (knot_id,),
+                )
+            ]
+        elif args.command == "find-knots-by-lower-bound":
+            clauses = ["c.u_lower>=?"]
+            parameters: list[Any] = [args.min]
+            if args.exact_only:
+                clauses.append("c.interval_exact=1")
+            if args.method:
+                clauses.append("m.method_id=?")
+                parameters.append(args.method)
+            parameters.append(args.limit)
+            rows = [
+                {
+                    "knot_id": knot,
+                    "u_lower": lower,
+                    "retained_upper": upper,
+                    "exact": bool(exact),
+                    "method": method,
+                    "trust_status": trust,
+                }
+                for knot, lower, upper, exact, method, trust in lower_bounds.execute(
+                    f"""
+                    SELECT DISTINCT c.knot_id,c.u_lower,c.retained_upper,
+                           c.interval_exact,m.method_id,c.trust_status
+                    FROM lower_bound_claims c JOIN claim_evidence e USING(claim_id)
+                    JOIN methods m USING(method_id)
+                    WHERE {" AND ".join(clauses)}
+                    ORDER BY c.u_lower DESC,c.knot_id,m.method_id LIMIT ?
+                    """,
+                    parameters,
+                )
+            ]
+        else:
+            rows = [
+                {
+                    "source_id": source,
+                    "repository_url": repository,
+                    "source_commit": commit,
+                    "commit_date": commit_date,
+                    "work_title": work,
+                    "work_url": work_url,
+                    "citation_pointer": citation,
+                    "erratum_pointer": erratum,
+                    "license": license_name,
+                }
+                for source, repository, commit, commit_date, work, work_url, citation, erratum, license_name in lower_bounds.execute(
+                    """
+                    SELECT source_id,repository_url,source_commit,commit_date,
+                           work_title,work_url,citation_pointer,erratum_pointer,license
+                    FROM sources ORDER BY source_id
+                    """
+                )
+            ]
+        lower_bounds.close()
+        emit(rows, args.json)
+        return
+
+    if args.command in {
+        "pd-for-graph",
+        "graph-for-pd",
         "knot-show",
         "resolve-identifier",
         "resolve-representation",
@@ -502,9 +795,21 @@ def main() -> None:
         "find-knots-by-catalogue-property",
     }:
         federation = federation_connection(args.federation)
+        if args.command in {"pd-for-graph", "graph-for-pd"}:
+            identifications = identification_connection(args.identifications)
         if args.command in {"knot-show", "resolve-identifier", "neighbors"}:
             knot_pk = resolve_knot(federation, args.identifier, args.scheme)
-        if args.command == "knot-show":
+        if args.command == "pd-for-graph":
+            rows = pd_rows_for_graph(
+                identifications, federation, args.key_or_node, args.limit
+            )
+            identifications.close()
+        elif args.command == "graph-for-pd":
+            rows = graph_rows_for_pd(
+                identifications, federation, args.pd, args.sha256, args.limit
+            )
+            identifications.close()
+        elif args.command == "knot-show":
             rows = federated_knot_rows(federation, knot_pk)
         elif args.command == "resolve-identifier":
             rows = [
@@ -524,12 +829,7 @@ def main() -> None:
             digest = (
                 bytes.fromhex(args.sha256)
                 if args.sha256
-                else hashlib.sha256(
-                    args.encoding.encode()
-                    + b"\0"
-                    + args.representation.encode()
-                    + b"\0"
-                ).digest()
+                else representation_digest(args.encoding, args.representation)
             )
             rows = [
                 {
@@ -790,7 +1090,7 @@ def main() -> None:
                     )
                 )
         elif args.command == "identification-for-graph":
-            if args.key_or_node.isdigit():
+            if args.key_or_node.isdigit() and len(args.key_or_node) != 64:
                 predicate = "v.node_id=?"
                 parameter: Any = int(args.key_or_node)
             else:

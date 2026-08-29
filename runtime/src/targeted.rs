@@ -4,6 +4,7 @@
 //! has a finite route to the unknot. Policy output only orders proposals; the
 //! exact representation and proof-program validators remain authoritative.
 
+use crate::frontier::{enumerate_scrambles_detailed, ScrambleLimits};
 use crate::policy::{
     compile_preprocessing_instructions, preprocess_to_stopping_point, preprocessing_audit_sha256,
     PolicyLimits, PolicyOracle, PolicyStopReason,
@@ -23,6 +24,12 @@ pub struct ConnectedInsertLimits {
     pub max_simulations: u32,
     pub max_search_states: u32,
     pub max_track_depth: u16,
+    /// Optional hard acceptance bound for the complete route through a graph hit.
+    pub max_result_u: Option<u32>,
+    /// Maximum semantic length of a zero-cost*;CC;zero-cost* proposal.
+    pub max_macro_semantic_depth: u16,
+    /// Per-expanded-node exact-state budget used to construct macro proposals.
+    pub max_macro_states: u32,
     pub policy_limits: PolicyLimits,
 }
 
@@ -32,6 +39,9 @@ impl Default for ConnectedInsertLimits {
             max_simulations: 250,
             max_search_states: 250,
             max_track_depth: 12,
+            max_result_u: None,
+            max_macro_semantic_depth: 1,
+            max_macro_states: 1,
             policy_limits: PolicyLimits::default(),
         }
     }
@@ -39,7 +49,12 @@ impl Default for ConnectedInsertLimits {
 
 impl ConnectedInsertLimits {
     fn validate(self) -> Result<()> {
-        if self.max_simulations == 0 || self.max_search_states == 0 || self.max_track_depth == 0 {
+        if self.max_simulations == 0
+            || self.max_search_states == 0
+            || self.max_track_depth == 0
+            || self.max_macro_semantic_depth == 0
+            || self.max_macro_states == 0
+        {
             return Err("connected-insert budgets must be positive".into());
         }
         Ok(())
@@ -120,7 +135,10 @@ pub fn force_connected_insert<O: PolicyOracle>(
         return Ok(miss_result(input_key, None, reason, manifest));
     }
     let start = initial.output.clone();
-    if let Some(u) = graph.u_upper_bound(&start.key) {
+    if let Some(u) = graph
+        .u_upper_bound(&start.key)
+        .filter(|u| limits.max_result_u.is_none_or(|maximum| *u <= maximum))
+    {
         let terminal = initial.stop_reason == PolicyStopReason::TerminalRepresentation;
         manifest.push_str(&format!("result\talready_covered\t{}\n", u));
         return Ok(ConnectedInsertResult {
@@ -187,7 +205,13 @@ pub fn force_connected_insert<O: PolicyOracle>(
             depth: current.depth + 1,
             policy_chain: true,
         });
-        if let Some(target_u) = graph.u_upper_bound(&report.output.key) {
+        if let Some(target_u) = graph.u_upper_bound(&report.output.key).filter(|target_u| {
+            result_u_within_limit(
+                *target_u,
+                current.depth.saturating_add(1),
+                limits.max_result_u,
+            )
+        }) {
             policy_terminal = Some((next_index, report.output.key, target_u));
             break;
         }
@@ -215,36 +239,67 @@ pub fn force_connected_insert<O: PolicyOracle>(
             continue;
         }
         let preferred = preferred_cc(state.attestation)?;
-        let mut actions = Vec::new();
+        let remaining = limits.max_simulations.saturating_sub(simulations);
+        let mut proposals = Vec::<(Vec<SemanticAction>, BraidRepresentation, bool)>::new();
+        let mut proposal_outputs = HashSet::new();
         if let Some(action) = preferred {
-            actions.push(action);
+            let output = action.apply(&state.stopping.representation)?;
+            proposal_outputs.insert(output.encode()?);
+            proposals.push((vec![action], output, true));
         }
-        actions.extend(
-            (0..state.stopping.representation.word.len() as u32)
-                .map(|position| SemanticAction::CrossingChange { position })
-                .filter(|action| Some(*action) != preferred),
-        );
-        for action in actions {
+        for action in (0..state.stopping.representation.word.len() as u32)
+            .map(|position| SemanticAction::CrossingChange { position })
+            .filter(|action| Some(*action) != preferred)
+        {
+            let output = action.apply(&state.stopping.representation)?;
+            if proposal_outputs.insert(output.encode()?) {
+                proposals.push((vec![action], output, false));
+            }
+        }
+        for macro_depth in 1..=limits.max_macro_semantic_depth {
+            let enumeration = enumerate_scrambles_detailed(
+                &state.stopping.representation,
+                ScrambleLimits {
+                    depth: macro_depth,
+                    max_states: limits.max_macro_states,
+                    max_candidates: remaining.max(1),
+                    max_strands: 12,
+                    max_word_length: 96,
+                    min_cc_cost: 1,
+                    max_cc_cost: 1,
+                },
+            )?;
+            for candidate in enumeration.candidates {
+                if proposal_outputs.insert(candidate.output.encode()?) {
+                    proposals.push((candidate.actions, candidate.output, false));
+                }
+            }
+        }
+        for (actions, raw, is_policy_child) in proposals {
             if simulations >= limits.max_simulations
                 || states.len() + policy_states.len() > limits.max_search_states as usize
             {
                 break;
             }
-            let Ok(raw) = action.apply(&state.stopping.representation) else {
-                continue;
-            };
             simulations += 1;
             let report = preprocess_to_stopping_point(&raw, oracle, limits.policy_limits)?;
             if !report.is_graph_stopping_point() {
                 manifest.push_str(&format!(
                     "attempt\t{}\t{}\tincomplete:{:?}\n",
                     state.depth + 1,
-                    action.encode_u63()?,
+                    actions
+                        .first()
+                        .ok_or("target macro unexpectedly has no actions")?
+                        .encode_u63()?,
                     report.stop_reason
                 ));
                 continue;
             }
-            let mut instructions = vec![ProofInstruction::Action(action)];
+            let mut instructions: Vec<_> = actions
+                .iter()
+                .copied()
+                .map(ProofInstruction::Action)
+                .collect();
             instructions.extend(compile_preprocessing_instructions(&report)?);
             let program = CheckpointedProofProgram { instructions }
                 .canonicalize_semantic_first(&state.stopping.representation)?;
@@ -256,9 +311,14 @@ pub fn force_connected_insert<O: PolicyOracle>(
                 return Err("connected-insert inverse witness failed exact replay".into());
             }
             let next_key = report.output.key;
-            let is_policy_child = preferred == Some(action);
             let next_policy_chain = state.policy_chain && is_policy_child;
-            if let Some(target_u) = graph.u_upper_bound(&next_key) {
+            if let Some(target_u) = graph.u_upper_bound(&next_key).filter(|target_u| {
+                result_u_within_limit(
+                    *target_u,
+                    state.depth.saturating_add(1),
+                    limits.max_result_u,
+                )
+            }) {
                 let next_index = states.len();
                 states.push(SearchState {
                     stopping: report.output.clone(),
@@ -274,7 +334,10 @@ pub fn force_connected_insert<O: PolicyOracle>(
                     state.depth + 1,
                     hex(&next_key),
                     target_u,
-                    action.encode_u63()?
+                    actions
+                        .first()
+                        .ok_or("target macro unexpectedly has no actions")?
+                        .encode_u63()?
                 ));
                 break;
             }
@@ -444,10 +507,12 @@ fn manifest_header<O: PolicyOracle>(
     initial: &crate::policy::PreprocessingReport,
 ) -> Result<String> {
     Ok(format!(
-        "{CONNECTED_INSERT_MANIFEST_VERSION}\nsource_id\t{source_id}\nsnapshot_id\t{snapshot_id}\nmodel_id\t{}\nobjective_ratio\t{}\ninput\t{}\t{}\nlimits\t{}\t{}\t{}\t{}\t{}\ninitial\t{:?}\t{}\t{}\n",
+        "{CONNECTED_INSERT_MANIFEST_VERSION}\nsource_id\t{source_id}\nsnapshot_id\t{snapshot_id}\nmodel_id\t{}\nobjective_ratio\t{}\ninput\t{}\t{}\nlimits\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\ninitial\t{:?}\t{}\t{}\n",
         oracle.model_id(), oracle.objective_ratio(), hex(&input_key), hex(&input.encode()?),
         limits.max_simulations, limits.max_search_states, limits.max_track_depth,
         limits.policy_limits.max_policy_plies, limits.policy_limits.max_semantic_moves,
+        optional_u32(limits.max_result_u),
+        limits.max_macro_semantic_depth, limits.max_macro_states,
         initial.stop_reason, initial.policy_plies, initial.semantic_moves
     ))
 }
@@ -487,6 +552,10 @@ fn optional_u32(value: Option<u32>) -> String {
     value
         .map(|number| number.to_string())
         .unwrap_or_else(|| "-".into())
+}
+
+fn result_u_within_limit(target_u: u32, track_depth: u16, maximum: Option<u32>) -> bool {
+    maximum.is_none_or(|maximum| target_u.saturating_add(u32::from(track_depth)) <= maximum)
 }
 
 #[cfg(test)]
@@ -619,5 +688,33 @@ mod tests {
         ));
         assert_eq!((graph.node_count(), graph.edge_count()), before);
         assert_eq!(result.simulations, 1);
+    }
+
+    #[test]
+    fn result_bound_rejects_a_valid_but_too_expensive_connection() {
+        let mut graph = PopulationGraph::from_unknot([7; 32]).unwrap();
+        let trefoil = BraidRepresentation {
+            strands: 2,
+            cyclic_band_generators: false,
+            word: vec![1, 1, 1],
+        };
+        let before = (graph.node_count(), graph.edge_count());
+        let result = force_connected_insert(
+            &mut graph,
+            &trefoil,
+            &mut PreferredCcOracle,
+            ConnectedInsertLimits {
+                max_result_u: Some(0),
+                ..ConnectedInsertLimits::default()
+            },
+            "test",
+            "root",
+        )
+        .unwrap();
+        assert!(matches!(
+            result.disposition,
+            ConnectedInsertDisposition::CoverageMiss { .. }
+        ));
+        assert_eq!((graph.node_count(), graph.edge_count()), before);
     }
 }

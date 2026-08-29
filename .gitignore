@@ -8,3 +8,13 @@ __pycache__/
 outputs/smoke-*
 outputs/*-regenerated.*
 outputs/*regression*.txt
+
+# Generated campaign, witness, snapshot, and report artifacts.  Historical
+# files already tracked under outputs/ remain tracked; new run artifacts stay
+# local unless explicitly force-added for a release.
+outputs/*
+
+# Locally assembled release bundles and scratch work.
+release-v*/
+release-v*.tar.zst
+tmp/

@@ -1239,6 +1239,21 @@ pub struct CheckpointedProofProgram {
     pub instructions: Vec<ProofInstruction>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SemanticReplayStep {
+    pub instruction_index: u32,
+    pub state: BraidRepresentation,
+    pub action: SemanticAction,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InstructionReplayStep {
+    pub instruction_index: u32,
+    pub before: BraidRepresentation,
+    pub instruction: ProofInstruction,
+    pub after: BraidRepresentation,
+}
+
 /// A coordinate-independent proof template plus the torus coordinate at which
 /// it is instantiated by one edge.  `anchor_y` is the position of the first
 /// position-bearing semantic action.  Every stored position in `template` is
@@ -1423,6 +1438,56 @@ impl CheckpointedProofProgram {
             state = apply_proof_instruction(&state, instruction, index)?;
         }
         Ok(state)
+    }
+
+    /// Replay while retaining the exact physical state immediately before each
+    /// semantic action. Coordinate-only instructions are applied but do not
+    /// become training labels.
+    pub fn semantic_replay_steps(
+        &self,
+        source: &BraidRepresentation,
+    ) -> Result<Vec<SemanticReplayStep>> {
+        if self.instructions.is_empty() {
+            return Err("checkpointed proof program is empty".into());
+        }
+        let mut state = source.clone();
+        let mut steps = Vec::new();
+        for (index, instruction) in self.instructions.iter().copied().enumerate() {
+            if let ProofInstruction::Action(action) = instruction {
+                steps.push(SemanticReplayStep {
+                    instruction_index: index.try_into()?,
+                    state: state.clone(),
+                    action,
+                });
+            }
+            state = apply_proof_instruction(&state, instruction, index)?;
+        }
+        Ok(steps)
+    }
+
+    /// Replay every instruction while retaining exact before/after states.
+    /// This is used by derived metric-learning sidecars; it does not weaken
+    /// proof validation or admit any new instruction semantics.
+    pub fn instruction_replay_steps(
+        &self,
+        source: &BraidRepresentation,
+    ) -> Result<Vec<InstructionReplayStep>> {
+        if self.instructions.is_empty() {
+            return Err("checkpointed proof program is empty".into());
+        }
+        let mut state = source.clone();
+        let mut steps = Vec::with_capacity(self.instructions.len());
+        for (index, instruction) in self.instructions.iter().copied().enumerate() {
+            let before = state.clone();
+            state = apply_proof_instruction(&state, instruction, index)?;
+            steps.push(InstructionReplayStep {
+                instruction_index: index.try_into()?,
+                before,
+                instruction,
+                after: state.clone(),
+            });
+        }
+        Ok(steps)
     }
 
     /// Factor the position of the first local operation out of the immutable

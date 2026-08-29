@@ -18,7 +18,7 @@ from typing import Any
 from reidemeister_trace import extract_seeded_level_trace, extract_trace
 
 FORMAT = "unknotdb-catalogue-reidemeister-witness-cohort-v0"
-KNOT_ID = re.compile(r"knot:(\d+)_(\d+)$")
+KNOT_ID = re.compile(r"knot:(\d+)([an]?)_(\d+)$")
 
 
 def file_sha256(path: Path) -> str:
@@ -60,18 +60,25 @@ def rep_key(strands: int, word: list[int]) -> bytes:
 
 
 def catalogue_items(
-    catalogue: sqlite3.Connection, min_crossings: int, max_crossings: int
-) -> list[tuple[int, int, str, int]]:
+    catalogue: sqlite3.Connection,
+    min_crossings: int,
+    max_crossings: int,
+    include_ranges: bool = False,
+) -> list[tuple[int, str, int, str, int]]:
     result = []
     for knot_id, lower, upper, claim_kind in catalogue.execute(
         "SELECT knot_id,u_lower,u_upper,claim_kind FROM catalogue_u_claims"
     ):
         match = KNOT_ID.fullmatch(knot_id)
-        if not match or claim_kind != "exact" or lower != upper:
+        if not match or (
+            not include_ranges and (claim_kind != "exact" or lower != upper)
+        ):
             continue
-        crossings, index = map(int, match.groups())
+        crossings = int(match.group(1))
+        style = match.group(2)
+        index = int(match.group(3))
         if min_crossings <= crossings <= max_crossings:
-            result.append((crossings, index, knot_id, int(upper)))
+            result.append((crossings, style, index, knot_id, int(upper)))
     result.sort()
     return result
 
@@ -84,6 +91,14 @@ def main() -> None:
     parser.add_argument("--max-crossings", type=int, required=True)
     parser.add_argument("--max-type-iii", type=int, default=250)
     parser.add_argument("--seeded-fallback-seeds", type=int, default=0)
+    parser.add_argument(
+        "--only-knot",
+        action="append",
+        default=[],
+        help="restrict to a canonical ID such as knot:13a_1232; repeatable",
+    )
+    parser.add_argument("--limit", type=int)
+    parser.add_argument("--include-ranges", action="store_true")
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--summary", type=Path, required=True)
     args = parser.parse_args()
@@ -97,12 +112,26 @@ def main() -> None:
 
     catalogue = sqlite3.connect(f"file:{args.catalogue}?mode=ro", uri=True)
     graph = sqlite3.connect(f"file:{args.graph}?mode=ro", uri=True)
-    items = catalogue_items(catalogue, args.min_crossings, args.max_crossings)
+    items = catalogue_items(
+        catalogue, args.min_crossings, args.max_crossings, args.include_ranges
+    )
+    if args.only_knot:
+        selected = set(args.only_knot)
+        items = [item for item in items if item[3] in selected]
+        missing = selected - {item[3] for item in items}
+        if missing:
+            raise ValueError(
+                f"requested knot IDs are not exact catalogue rows: {sorted(missing)}"
+            )
+    if args.limit is not None:
+        if args.limit <= 0:
+            raise ValueError("--limit must be positive")
+        items = items[: args.limit]
     started = time.monotonic()
     results: list[dict[str, Any]] = []
 
-    for crossings, index, knot_id, exact_u in items:
-        name = f"{crossings}_{index}"
+    for crossings, style, index, knot_id, exact_u in items:
+        name = f"{crossings}{style}{index}" if style else f"{crossings}_{index}"
         source_word = list(map(int, Link(name).braid_word()))
         strands = max(map(abs, source_word)) + 1
         word, mirrored = normalize_word(source_word)
@@ -195,6 +224,9 @@ def main() -> None:
             "max_crossings": args.max_crossings,
             "max_type_iii": args.max_type_iii,
             "seeded_fallback_seeds": args.seeded_fallback_seeds,
+            "only_knot": args.only_knot,
+            "limit": args.limit,
+            "include_ranges": args.include_ranges,
         },
         "summary": {
             "selected": len(results),

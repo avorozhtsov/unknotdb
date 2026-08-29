@@ -57,3 +57,24 @@ a separate atomic snapshot only if protected B4/RF coverage does not regress.
 
 RF Knots and pgx-mcts-bench were inspected read-only. No training or checkpoint
 mutation occurred.
+
+## Reinspection on 2026-08-28
+
+The candidate inventory was checked again after the catalogue-gap branch pilot,
+using the same frozen-policy compatibility requirements.  The result is
+unchanged: there is still no newer executable candidate to compare with Q254.
+
+The only registered continuation is
+`q304-fast6-20260824`.  It contains the proposed Q304 protocol and prior bank,
+but no model checkpoint, branch manifest, or completed source-state.  Its
+preparation log still terminates with `fast-6 Q254 terminal marker is missing`.
+Consequently it has no loadable model identity and cannot participate in a
+controlled stopping-point or short-solve comparison.  The other locally
+available checkpoint files predate Q254 or use different scientist/model
+contracts; none is a drop-in successor under the current
+`unknotdb-frozen-policy-manifest-v0` loader.
+
+No candidate-policy snapshot was built or published.  Q254 remains pinned for
+the proof graph, and changing it still requires a separate full-corpus offline
+reattestation followed by an atomic, separately named snapshot.  This
+reinspection was read-only and performed no training or checkpoint changes.
