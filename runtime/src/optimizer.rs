@@ -7,6 +7,7 @@
 
 use crate::frontier::{enumerate_scrambles_detailed, ScrambleLimits};
 use crate::population::{PopulationGraph, RelaxationOutcome};
+use crate::reducer::DeterministicReducer;
 use crate::representation::{CheckpointedProofProgram, NormalizationWitness, ProofInstruction};
 use crate::{RepKey, Result};
 use std::collections::{BTreeMap, BTreeSet};
@@ -244,12 +245,17 @@ pub fn optimize_vertex(
                 break;
             }
             simulations += 1;
-            let normalized = candidate.output.normalize()?;
-            if !seen_targets.insert(normalized.key) {
+            // Search candidates are raw semantic endpoints.  Apply the same
+            // deterministic decreasing reducer used by graph preprocessing so
+            // an immediately exposed RI/RII simplification is not hidden from
+            // exact graph lookup.  The assembled program below still replays
+            // every normalization and primitive before the proposal is trusted.
+            let reduction = DeterministicReducer::reduce(&candidate.output)?;
+            if !seen_targets.insert(reduction.output.key) {
                 excluded += 1;
                 continue;
             }
-            let Some(target_u) = graph.u_upper_bound(&normalized.key) else {
+            let Some(target_u) = graph.u_upper_bound(&reduction.output.key) else {
                 continue;
             };
             exact_graph_hits += 1;
@@ -262,10 +268,21 @@ pub fn optimize_vertex(
                 .copied()
                 .map(ProofInstruction::Action)
                 .collect();
-            push_normalization(&mut instructions, normalized.witness);
+            push_normalization(&mut instructions, reduction.input_normalization);
+            instructions.extend(
+                reduction
+                    .program
+                    .actions
+                    .iter()
+                    .copied()
+                    .map(ProofInstruction::Action),
+            );
+            push_normalization(&mut instructions, reduction.output.witness);
             let program = CheckpointedProofProgram { instructions }
                 .canonicalize_semantic_first(&source.representation.representation)?;
-            if program.replay(&source.representation.representation)? != normalized.representation {
+            if program.replay(&source.representation.representation)?
+                != reduction.output.representation
+            {
                 return Err("optimizer proposal failed exact normalized replay".into());
             }
             if program.cc_cost() != 1 {
@@ -281,14 +298,14 @@ pub fn optimize_vertex(
                 .map_err(|_| "optimizer semantic length exceeds u32")?;
             let proposal = Proposal {
                 depth,
-                target_key: normalized.key,
+                target_key: reduction.output.key,
                 target_u,
                 program,
                 encoded_program,
                 semantic_len,
             };
             proposals
-                .entry(normalized.key)
+                .entry(reduction.output.key)
                 .and_modify(|current| {
                     if proposal_order(&proposal, profile) < proposal_order(current, profile) {
                         *current = proposal.clone();
@@ -479,7 +496,7 @@ mod tests {
     }
 
     #[test]
-    fn exact_graph_hit_strictly_improves_and_is_replayable() {
+    fn post_cc_reducer_graph_hit_strictly_improves_and_is_replayable() {
         let mut graph = PopulationGraph::from_unknot([1; 32]).unwrap();
         let root = graph.unknot_key().unwrap();
         let simple = BraidRepresentation {
@@ -526,37 +543,6 @@ mod tests {
             .unwrap();
         assert_eq!(graph.u_upper_bound(&source.key), Some(2));
 
-        let changed = SemanticAction::CrossingChange { position: 0 }
-            .apply(&source.representation)
-            .unwrap()
-            .normalize()
-            .unwrap();
-        let mut zero_program = None;
-        for position in 0..changed.representation.word.len() as u32 {
-            let candidate = CheckpointedProofProgram {
-                instructions: vec![
-                    ProofInstruction::Action(SemanticAction::Reduce { position }),
-                    ProofInstruction::Action(SemanticAction::Destabilize),
-                ],
-            };
-            if candidate
-                .replay(&changed.representation)
-                .is_ok_and(|output| output.strands == 1 && output.word.is_empty())
-            {
-                zero_program = Some(candidate);
-                break;
-            }
-        }
-        graph
-            .relax_unknot_edge(
-                changed.clone(),
-                stop(4),
-                root,
-                zero_program.expect("normalized CC output must reduce to the unknot"),
-                None,
-            )
-            .unwrap();
-        assert_eq!(graph.u_upper_bound(&changed.key), Some(0));
         let old_edges = graph.edge_count();
 
         let run = optimize_vertex(
@@ -578,7 +564,7 @@ mod tests {
         .unwrap();
         assert!(run.success);
         assert_eq!((run.old_u, run.new_u), (2, 1));
-        assert_eq!(run.accepted_target, Some(changed.key));
+        assert_eq!(run.accepted_target, Some(root));
         assert_eq!(run.accepted_edges, 1);
         assert_eq!(graph.edge_count(), old_edges + 1);
         assert_eq!(graph.u_upper_bound(&source.key), Some(1));
