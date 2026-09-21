@@ -298,16 +298,26 @@ def main() -> None:
 
     def evidence_for(component: bytes, canonical_id: str, row: dict[str, Any],
                      method: str) -> bytes:
+        """One evidence row per (knot, method, rigour, cross-check) claim.
+
+        Deliberately *not* per component.  A per-component row carrying a copy of
+        the engine dict cost 362 MB for 79k components in the first build, and
+        added nothing: the component -> evidence link is already carried by
+        `graph_vertex_knot_map.evidence_id`, and the full census-name list for
+        each vertex is in `snappy_identification_names`.  The engine is recorded
+        once, in `meta`.
+        """
+        del component
+        pointer = (f"method={method};knot_id={canonical_id};"
+                   f"rigor={row['rigor']};cross_check={row['cross_check']}")
         return add_evidence(
-            db, "attested", method, str(args.input), input_sha256,
-            f"cc0_component={component.hex()}",
+            db, "attested", method, str(args.input), input_sha256, pointer,
             {
                 "knot_id": canonical_id,
-                "census_names": row["names"],
-                "fingerprint_names": row["fingerprint_names"],
+                "method": method,
                 "rigor": row["rigor"],
                 "cross_check": row["cross_check"],
-                "engine": engine,
+                "engine_ref": "meta:snappy_attestation_engine",
                 "trust": "external-snappy-attestation-not-proof-graph-replay",
             },
         )
